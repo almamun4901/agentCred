@@ -1,0 +1,26 @@
+{
+  "name": "agent-cred",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Scoped credential issuance and verification for agent-to-agent calls",
+  "packageManager": "pnpm@10.30.1",
+  "engines": {
+    "node": ">=22"
+  },
+  "workspaces": [
+    "issuer",
+    "verifier-sdk",
+    "demo-agents/*"
+  ],
+  "scripts": {
+    "db:up": "docker compose up -d --wait postgres",
+    "db:down": "docker compose down",
+    "db:reset": "docker compose down -v && docker compose up -d --wait postgres",
+    "db:logs": "docker compose logs -f postgres",
+    "db:verify": "docker compose exec -T postgres psql -U agentcred -d agentcred -c '\\dt'",
+    "issuer:keys": "pnpm --filter @agent-cred/issuer keys:generate",
+    "issuer:dev": "pnpm --filter @agent-cred/issuer dev",
+    "issuer:test": "pnpm --filter @agent-cred/issuer test",
+    "issuer:test:integration": "pnpm --filter @agent-cred/issuer test:integration"
+  }
+}

@@ -1,0 +1,16 @@
+node_modules/
+dist/
+coverage/
+.env
+.env.*
+!.env.example
+keys/
+*.pem
+*.key
+.terraform/
+*.tfstate
+*.tfstate.*
+.DS_Store
+.claude/
+.codex/
+.agents/

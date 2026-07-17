@@ -1,0 +1,493 @@
+# Project: AgentCred — Scoped Credential Issuer & Verifier for Agent-to-Agent Calls
+
+## Project Progress
+
+Last updated: **2026-07-17**
+
+This file is the source of truth for implementation progress. Task checkboxes are
+updated only after the work has been implemented and verified. Architecture choices,
+alternatives, and consequences are recorded in [DECISIONS.md](./DECISIONS.md).
+
+| Phase | Status | Evidence / next step |
+|---|---|---|
+| Phase 0 — Setup | Complete | Workspace discovery and PostgreSQL schema smoke test passed |
+| Phase 1 — Issuer Service | Complete | ES256 signing, issuance routes, PostgreSQL integration, and manual verification passed |
+| Phase 2 — Verifier SDK | Not started | Depends on the Phase 1 token contract |
+| Phase 3 — Demo Agents | Not started | Depends on issuer and verifier |
+| Phase 4 — Audit + Revocation | Not started | Initial tables exist; application behavior remains |
+| Phase 5 — Revocation Cache | Not started | Redis intentionally deferred |
+| Phase 6 — Rate Limiting | Not started | Policy and Redis implementation remain |
+| Phase 7 — Load Test | Not started | Requires working verifier paths |
+| Phase 8 — Dockerization | Not started | Containerize application services |
+| Phase 9 — CI | Not started | Add automated lint, test, and build gates |
+| Phase 10 — Terraform | Not started | Provision the documented AWS architecture |
+| Phase 11 — CD | Not started | Connect verified images to AWS deployment |
+| Phase 12 — README + Framing | Not started | Publish evidence, tradeoffs, and demo narrative |
+
+Status meanings:
+
+- **Not started:** no phase implementation has been claimed, even if placeholder files exist.
+- **In progress:** implementation has begun but the phase verification gate has not passed.
+- **Complete:** every required task and the phase verification gate have passed.
+- **Blocked:** progress requires a documented external decision or dependency.
+
+## 1. What This Project Does
+
+AgentCred is a minimal, working implementation of the credential/scope-verification
+pattern that current agent-identity standards work (NIST AI Agent Standards
+Initiative, MCP-I, Google's A2A protocol, IETF agent-authorization drafts) is
+converging on. It is not a new protocol — it is a small, honest demonstration
+of the core mechanism: an agent presents a short-lived, scoped, signed credential
+to another agent's service, and that service verifies signature, expiry, audience,
+and scope before allowing the call. If the agent tries to act outside its granted
+scope, the call is rejected and logged.
+
+Core pieces:
+- **Issuer service** — issues signed, scoped, expiring JWTs on behalf of a principal/agent.
+- **Verifier SDK** — a small reusable package that any receiving service can use to
+  validate a presented credential before executing an action.
+- **Two demo agents** — Agent A (caller) and Agent B (mock service with a protected
+  endpoint) to demonstrate both the happy path and the "blocked overreach" path.
+- **Audit log + revocation list** — every issuance and verification attempt is logged;
+  tokens can be revoked before their TTL expires (addressing the known TTL-only
+  revocation gap for agent-speed interactions).
+- **Distributed revocation cache** — revocation checks move from a per-request
+  Postgres lookup to a Redis cache in front of the verifier, with periodic sync
+  back to the issuer's source of truth. This is what turns revocation from "a
+  feature that works" into "a system with real consistency tradeoffs" you can
+  discuss in an interview.
+- **Rate limiting per credential** — beyond binary allow/deny, each credential
+  carries a request-rate budget (e.g., 100 req/min) scoped by `scope` and
+  `principal`, enforced by the verifier before the scope check.
+- **Containerized + deployed** — Dockerized, deployed to AWS (ECS Fargate + RDS),
+  with CI/CD via GitHub Actions and infra as Terraform.
+
+## 2. Context / Why This Project
+
+Multi-agent systems (agents calling other agents' tools/services) currently lack a
+standard way to answer: "is this agent authorized to do this specific thing, on
+behalf of whom, for how long, and can I revoke that authorization mid-flight?"
+Several real standards efforts are actively working this problem as of 2026:
+
+- **NIST AI Agent Standards Initiative** (launched Feb 2026)
+- **MCP-I** (donated to the Decentralized Identity Foundation)
+- **Google's A2A protocol**
+- **IETF drafts** — agent authorization profiles for OAuth, agent identity discovery
+- **Academic work** on invocation-bound capability tokens
+
+This project implements the smallest honest version of that pattern, to understand
+the actual failure modes (e.g., why TTL-only revocation is too slow at agent speed,
+why bearer tokens without audience-binding are dangerous for agent-to-agent calls).
+
+**Positioning for resume/interviews:** "I read into the current NIST/IETF work on
+agent identity and implemented a minimal working version of scoped credential
+issuance and verification to understand the actual failure modes." Not "I invented
+agent OAuth."
+
+**Best-fit audiences:** AI infrastructure / LLMOps / forward-deployed engineering
+roles at startups, and FDSE-style interviews (e.g., Palantir) that reward "here's an
+ambiguous real problem, here's how I scoped it down and found the hard part." Weaker
+signal for big-co new-grad screens (Google/Microsoft) and for product-craft-focused
+roles (Notion) — include there mainly as a secondary bullet, not the headline project.
+
+**Why the distributed cache and rate limiting matter:** the original v1 (DB-lookup
+revocation, binary allow/deny) proves you can implement a known pattern correctly.
+These two additions prove you understand *systems* tradeoffs, not just correct
+implementation — cache consistency, staleness windows, and multi-tenant fairness
+are exactly what separates a "built a demo" story from a "reasoned about a
+distributed system" story in an interview. This is the difference that matters
+most for infra/LLMOps roles specifically.
+
+## 3. Tech Stack
+
+| Layer | Choice |
+|---|---|
+| Language/runtime | TypeScript / Node.js |
+| API framework | Fastify |
+| Auth/token signing | `jose` (ES256 keypair, asymmetric signing) |
+| Database | PostgreSQL |
+| Cache | Redis (revocation cache, rate-limit counters) |
+| Local dev | Docker Compose |
+| Testing | Vitest or Jest + Supertest for integration tests |
+| Containerization | Docker (multi-stage builds) |
+| CI | GitHub Actions (lint, test, build) |
+| CD | GitHub Actions → ECR → ECS Fargate |
+| Infra as code | Terraform (ECR, ECS cluster/service/task def, RDS, security groups, Secrets Manager) |
+| Cloud | AWS (ECS Fargate, RDS Postgres db.t4g.micro, ElastiCache for Redis cache.t4g.micro OR self-hosted Redis container for cost control, Secrets Manager, CloudWatch Logs) |
+| Secrets | AWS Secrets Manager / SSM Parameter Store (SecureString) — never env vars in plaintext |
+
+## 4. Repo Structure
+
+```
+agent-cred/
+├── issuer/
+│   ├── src/
+│   │   ├── server.ts
+│   │   ├── routes/issue.ts
+│   │   ├── routes/revoke.ts
+│   │   ├── db.ts
+│   │   └── sign.ts
+│   ├── scripts/gen-keys.ts
+│   ├── Dockerfile
+│   └── package.json
+├── verifier-sdk/
+│   ├── src/
+│   │   ├── verify.ts
+│   │   ├── middleware.ts
+│   │   ├── revocation-cache.ts   # Redis-backed revocation lookup + fallback to Postgres
+│   │   └── rate-limiter.ts       # per-credential/scope/principal rate limiting via Redis
+│   └── package.json
+├── issuer/
+│   └── src/
+│       └── jobs/sync-revocations.ts   # periodic job: issuer's source of truth → Redis
+├── demo-agents/
+│   ├── agent-a/
+│   └── agent-b/
+│       └── Dockerfile
+├── db/
+│   ├── schema.sql
+│   └── seed.sql
+├── infra/
+│   └── terraform/
+│       ├── main.tf
+│       ├── variables.tf
+│       └── outputs.tf
+├── .github/workflows/
+│   ├── ci.yml
+│   └── deploy.yml
+├── docker-compose.yml
+└── README.md
+```
+
+## 5. Task Breakdown, Start to End
+
+### Phase 0 — Setup (1-2h) — Complete 2026-07-17
+
+- [x] Initialize Git with a `main` branch.
+- [x] Initialize the pnpm monorepo and discover `issuer`, `verifier-sdk`, and both demo-agent workspaces.
+- [x] Set up PostgreSQL 17 via Docker Compose for local development.
+- [x] Write `db/schema.sql` with `issuances`, `revocations`, and `verification_log` tables.
+- [x] Add local database lifecycle and verification scripts.
+- [x] Document local startup, connection settings, and reset behavior.
+
+**Testing after this task:** `docker compose up` brings up Postgres cleanly; can connect via `psql` and confirm tables exist after running schema.sql.
+
+**Verification recorded 2026-07-17:**
+
+- `pnpm -r list --depth -1` discovered all five workspace projects.
+- Docker Compose downloaded PostgreSQL, created a persistent volume, and reported the container healthy.
+- `psql` confirmed all three required tables exist.
+- A transaction inserted an issuance, its revocation, and a denied verification event;
+  a join across all three returned the expected record. The transaction was rolled back
+  so the smoke test left no application data behind.
+- `docker compose config -q` and `git diff --check` passed.
+
+**Known limitations accepted for Phase 0:**
+
+- Schema files in `/docker-entrypoint-initdb.d` run only when the PostgreSQL volume is
+  empty. `pnpm db:reset` recreates a local database; a migration tool is required before
+  shared or production environments are introduced.
+- The checked-in password is a local-only default, and PostgreSQL binds to `127.0.0.1`.
+  Deployed secrets must use AWS Secrets Manager or SSM as required by the architecture.
+- Later-phase source files are placeholders and do not count as completed work.
+
+---
+
+### Phase 1 — Issuer Service (4-6h)
+- [x] Package setup and runtime configuration.
+- [x] `gen-keys.ts` — generate a local, gitignored ES256 PEM keypair with safe overwrite behavior.
+- [x] `sign.ts` — sign the complete credential claim contract through `jose`.
+- [x] PostgreSQL issuance repository.
+- [x] `POST /issue` with request validation, persistence, and JWT response.
+- [x] `GET /issuances/:jti` metadata-only debugging endpoint.
+- [x] Unit and PostgreSQL integration test coverage implemented.
+- [x] Automated verification gate: typecheck, unit tests, integration tests, and build.
+- [x] Manual verification gate: generate keys, issue a token, verify it, and inspect stored metadata.
+- [x] Documentation and security-diff review complete.
+
+**Testing after this task:**
+- Unit test: token is signed correctly, decodes with matching public key.
+- Unit test: `exp` claim matches `iat + ttl`.
+- Integration test: `POST /issue` with valid payload returns 200 + token; missing `scope` returns 400.
+- Manual: issue a token via curl, decode it on jwt.io (or a script) and eyeball the claims.
+
+**Verification recorded 2026-07-17:**
+
+- TypeScript type-checking and the production build passed.
+- Fifteen unit/route tests passed, covering ES256 verification, the complete claim
+  contract, exact TTL arithmetic, unique JTIs, required and boundary validation,
+  metadata lookup, 404 behavior, and sanitized persistence failure.
+- Two PostgreSQL integration tests passed against the Compose database. The valid
+  route test verified the token with the matching public key, compared its JTI and
+  timestamps with the stored row, and retrieved it through the debugging endpoint.
+  The missing-scope case returned 400 without generating a JTI or inserting a row.
+- Local key generation produced a PKCS#8 private key with mode `0600` and an SPKI
+  public key with mode `0644`; a second run refused to overwrite them.
+- A live loopback issuer issued a five-minute credential. Local public-key verification
+  confirmed the ES256 header, every required claim, `exp = iat + 300`, and matching
+  metadata from `GET /issuances/:jti`.
+- Integration and manual verification rows were removed afterward. Generated keys,
+  build output, dependencies, and environment files remain ignored by Git.
+
+**Known limitations accepted for Phase 1:**
+
+- `POST /issue` has no caller authentication and is safe only as a loopback local demo.
+- Local PEM rotation and distribution are manual; deployment must move private-key
+  handling to managed secret or signing infrastructure.
+- TTL is capped at one hour and delegation input, revocation state, and verifier
+  behavior remain intentionally deferred to later phases.
+
+---
+
+### Phase 2 — Verifier SDK (4-6h)
+- `verify.ts` — pure function: `verifyCredential(token, requestedAction, expectedAud)`.
+  - Checks signature validity.
+  - Checks expiry (throws/handled by `jose` automatically).
+  - Checks `aud` matches expected audience.
+  - Checks `jti` against revocation list (DB call).
+  - Checks `requestedAction` is present in `scope`.
+  - Returns `{decision: 'allow'|'deny', reason?, claims?}`.
+- `middleware.ts` — Fastify `preHandler` wrapper that calls `verifyCredential` and short-circuits with 403 on deny.
+
+**Testing after this task (this is the core logic — test thoroughly):**
+- Unit test: valid token + in-scope action → allow.
+- Unit test: expired token → deny, reason `expired`.
+- Unit test: wrong audience → deny, reason `aud_mismatch`.
+- Unit test: revoked `jti` → deny, reason `revoked`.
+- Unit test: action not in scope → deny, reason `scope_exceeded`.
+- Unit test: malformed/tampered signature → deny, reason `invalid_signature`.
+- These 6 cases are the backbone of your demo narrative — don't skip any.
+
+---
+
+### Phase 3 — Demo Agents (4-6h)
+- **Agent B**: mock service with `GET /get-quote` protected by verifier middleware, requiring scope `read:quote:basic`.
+- **Agent A**: script that requests a credential from the issuer (scope `read:weather` only), then:
+  1. Calls `/get-quote` on Agent B with a token that lacks the right scope → expect 403, log it.
+  2. Requests a new token with correct scope → calls `/get-quote` again → expect 200.
+- Wire both allowed and denied attempts into `verification_log`.
+
+**Testing after this task:**
+- End-to-end script run: confirm one denied call and one allowed call appear correctly in `verification_log` with correct `decision` and `denial_reason`.
+- Manual walkthrough: this is your "attempted overreach gets blocked" demo — record the terminal output or a short screen capture for your portfolio/README.
+
+---
+
+### Phase 4 — Audit Log + Revocation (3-5h)
+- `POST /revoke` — takes `jti`, inserts into `revocations` table.
+- Update `verify.ts` to check `revocations` table before allowing (already covered in Phase 2 tests, but now backed by a real revoke endpoint).
+- Add a simple query/report script: "show all denials in the last hour, grouped by reason."
+
+**Testing after this task:**
+- Integration test: issue a token, revoke it, attempt to use it → expect deny with reason `revoked`, even though `exp` has not passed.
+- Confirm revocation check happens fast enough not to bottleneck the demo (should be a single indexed lookup).
+
+---
+
+### Phase 5 — Distributed Revocation Cache (5-7h)
+
+Move revocation checks off the request-critical-path Postgres lookup and onto Redis,
+with periodic sync back to the issuer as source of truth.
+
+- Add Redis to `docker-compose.yml`.
+- `revocation-cache.ts` in verifier-sdk: `isRevoked(jti)` checks Redis first (`SISMEMBER revoked_jtis <jti>` or a key-per-jti with TTL matching token TTL); on cache miss/Redis-down, falls back to Postgres (fail-safe, not fail-open — a cache outage should not silently allow revoked tokens through).
+- `sync-revocations.ts` in issuer: a periodic job (simple `setInterval` or cron-style, every N seconds) that reads new rows from `revocations` in Postgres and pushes them into Redis. This models the "periodic sync from source of truth" pattern from the diagram.
+- Update `POST /revoke` to also immediately push to Redis (write-through), so the demo can show *both* the fast path (immediate write-through) and the slow path (a revocation that happened directly in Postgres, only picked up on the next sync interval) — this is the core teaching moment.
+- Add a `sync_interval_seconds` config value and log every sync run (rows synced, duration).
+
+**Testing after this task:**
+- Unit test: `isRevoked` hits Redis, returns true/false correctly for known keys.
+- Unit test: simulate Redis unavailable (mock connection failure) → falls back to Postgres lookup, does not throw/allow-by-default.
+- Integration test — **fast path**: revoke via `POST /revoke` → immediately attempt to use the token → denied instantly (write-through worked).
+- Integration test — **slow path (staleness demo)**: insert a revocation directly into Postgres (bypassing the API), attempt to use the token *before* the next sync tick → currently still allowed (stale cache) → wait for sync interval → attempt again → now denied. Capture the timestamps of both attempts for your README as a concrete "here is the staleness window" artifact.
+- This staleness window number (e.g., "up to 5s of stale-allow risk with a 5s sync interval") is itself a resume-worthy sentence — record it.
+
+**Discussion points to write into the README (this is the point of the feature):**
+- *Consistency:* eventual consistency between issuer (source of truth) and verifier's cache; write-through narrows the window for API-driven revocations, sync interval bounds it for out-of-band ones.
+- *Cache invalidation:* explicit invalidation (write-through on revoke) vs. TTL-based expiry of cache entries themselves (should a Redis key ever expire before its underlying JWT does?).
+- *Stale reads:* the demonstrated window above, and what class of risk it represents (a revoked-but-still-cached-as-valid token being allowed for up to `sync_interval_seconds`).
+- *Performance:* compare p50/p99 latency of `isRevoked` via Redis vs. direct Postgres lookup under a simple load test (see Phase 7 below) — this is your actual "why we did this" evidence, not just an assumption.
+
+---
+
+### Phase 6 — Rate Limiting Per Credential (4-6h)
+
+Move from binary allow/deny to a request-rate budget enforced per credential,
+scoped by `scope` and `principal` (not just per-`jti`, since a principal issuing
+many short-lived credentials shouldn't be able to bypass a limit by rotating tokens).
+
+- `rate-limiter.ts` in verifier-sdk: sliding-window or fixed-window counter in Redis, keyed by `principal:scope` (e.g., `ratelimit:company-x:read.quote`), incremented on each verification attempt, checked against a configurable limit (e.g., 100 req/min) before the scope check runs.
+- Rate limit config lives alongside scope grants — either as an additional claim in the token (`rate_limit: {window_seconds: 60, max_requests: 100}`) issued by the issuer, or as a policy table (`rate_limit_policies` keyed by `principal` + `scope`) the verifier consults. **Recommendation: policy table**, not a token claim — it lets you change limits without reissuing tokens, which is the more realistic operational story.
+- Add `rate_limit_policies` table to `db/schema.sql`.
+- Extend `verification_log` with a new `decision` value: `deny_rate_limited` (distinct from `deny_scope_exceeded`) so your audit query can separate "wrong permission" from "too many requests" — these are different failure classes with different remediation.
+- Extend Agent A/B demo: fire N rapid requests from Agent A with a low test limit (e.g., 3/min) and show the 4th request getting `429` with `deny_rate_limited`.
+
+**Testing after this task:**
+- Unit test: N requests under the limit → all allowed, counter increments correctly.
+- Unit test: request N+1 within the window → denied with `deny_rate_limited`, counter does not increment past the limit.
+- Unit test: window reset — after the window elapses, counter resets and requests are allowed again.
+- Unit test: two different `principal`s hitting the same `scope` have independent counters (no cross-tenant bleed).
+- Integration test: full demo run — burst of requests from Agent A against a 3/min policy, confirm exactly 3 allowed then subsequent ones return 429 until window resets.
+- Load consideration: confirm the rate-limit check (Redis `INCR` + `EXPIRE`) doesn't meaningfully add latency vs. the Phase 5 baseline — this ties directly into the performance discussion point above.
+
+**Discussion points for the README:**
+- Why `principal:scope` and not `jti` — prevents rate-limit evasion via token rotation.
+- Fixed-window vs. sliding-window tradeoffs (fixed window is simpler but allows bursting at window boundaries — worth explicitly naming as a known simplification if you go fixed-window for time).
+- How this composes with revocation: order of checks in the verifier (signature → aud → revocation → rate limit → scope), and why that order matters (cheapest/most-authoritative checks first).
+
+---
+
+### Phase 7 — Simple Load Test (2-3h)
+
+Added specifically to produce real numbers for the Phase 5/6 performance discussion,
+not as a standalone feature.
+
+- Use `autocannon` or a small custom script to hit the verifier middleware directly (bypassing network hops to isolate the check logic) with concurrent requests.
+- Run three scenarios: (1) revocation check via Postgres only (pre-Phase-5 code path, kept behind a flag for comparison), (2) revocation check via Redis, (3) revocation + rate-limit check via Redis.
+- Record p50/p95/p99 latency and max sustained throughput for each.
+
+**Testing after this task:**
+- Numbers are captured in a small table/chart for the README — this is the evidence behind "moved to Redis for performance," not just an assertion.
+
+---
+
+### Phase 8 — Dockerization (1-2h)
+- Multi-stage Dockerfiles for `issuer` and `demo-agents/agent-b`.
+- `docker-compose.yml` updated to run issuer + agent-b + Postgres together for a one-command local demo.
+
+**Testing after this task:**
+- `docker compose up --build` from a clean clone brings up the full stack and the Phase 3 demo script still passes end-to-end inside containers.
+
+---
+
+### Phase 9 — CI (GitHub Actions) (2h)
+- `.github/workflows/ci.yml`: on push/PR — install, lint, run unit + integration tests, build Docker images (no push).
+
+**Testing after this task:**
+- Open a PR with a deliberately broken test → confirm CI fails.
+- Fix it → confirm CI passes and blocks merge appropriately if branch protection is on.
+
+---
+
+### Phase 10 — Terraform Infra (4-6h)
+- `main.tf`: ECR repo, ECS cluster + service + task definition, RDS Postgres instance, ElastiCache Redis instance (cache.t4g.micro) or a Redis container in the same ECS task/service if optimizing for cost, security groups, Secrets Manager secret for signing keys and DB credentials.
+- Keep to ~6-7 core resources — no modules, no multi-env workspaces. You should be able to explain every resource line by line in an interview.
+- **Cost note:** ElastiCache is not free-tier eligible. If cost is a concern (it should be, given your current situation), run Redis as a sidecar container inside the same ECS task instead of provisioning ElastiCache — same demo value, no extra managed-service cost. Document this tradeoff explicitly in the README as a deliberate cost-vs-realism decision.
+
+**Testing after this task:**
+- `terraform plan` runs clean with no errors.
+- `terraform apply` successfully provisions resources; manually verify in AWS console (ECR repo exists, RDS instance is `available`, ECS service shows 0/0 tasks since no image pushed yet).
+- `terraform destroy` cleanly tears everything down (important for cost control between work sessions).
+
+---
+
+### Phase 11 — CD (GitHub Actions → AWS) (2-3h)
+- `.github/workflows/deploy.yml`: on push to `main` — build image, push to ECR, update ECS task definition, force new deployment.
+- Optional: post-deploy smoke test hitting `/issue` and `/get-quote` on the live ECS service.
+
+**Testing after this task:**
+- Push to `main`, watch the Action run, confirm new ECS task is running the new image (check task definition revision number bumped).
+- Hit the live public/ALB endpoint (or via port-forward if no ALB) and re-run the Phase 3 demo against the deployed service.
+- Check CloudWatch Logs show the issuance/verification log lines.
+
+---
+
+### Phase 12 — README + Framing (2-4h)
+- Explicitly cite NIST AI Agent Standards Initiative, MCP-I, A2A, IETF drafts.
+- Frame as "a minimal working implementation of the credential/scope-verification pattern these emerging standards are converging on."
+- Include: architecture diagram, token schema, the 6 verifier test cases as a table, the Phase 5/6/7 latency numbers, and a "what this doesn't solve" section (honesty signal — e.g., no key rotation, single-issuer trust model only, fixed-window rate limiting allows boundary bursting).
+- Include the consistency/cache-invalidation/stale-reads/performance discussion from Phase 5 and the rate-limiting design tradeoffs from Phase 6 as their own README subsections — these are now a core part of the project's story, not an afterthought.
+- Include a short section on what deploying to AWS with Terraform + CI/CD taught you operationally (IAM/networking debugging is a legitimate story here).
+
+**Testing after this task:** Have someone unfamiliar with the project read only the README and correctly explain back to you what problem it solves and how the demo proves it — that's your interview-readiness check.
+
+## 6. Project Skills (Claude Code)
+
+To keep documentation, testing rigor, and cost/security hygiene consistent across
+every work session instead of relying on memory, the project uses Claude Code
+Skills — folders under `.claude/skills/` containing a `SKILL.md` (YAML frontmatter
++ instructions) that Claude loads automatically when the current task matches the
+skill's description. These are model-invoked, not something you run manually each
+time.
+
+| Skill | Triggers on | Maintains |
+|---|---|---|
+| **decision-log** | Any architectural choice with a real alternative (signing algo, Redis vs. DB-only, fixed vs. sliding window, ElastiCache vs. sidecar) | `DECISIONS.md` — ADR-format entries: context → options considered → decision → tradeoffs → revisit condition |
+| **performance-log** | After any load test run; before/after Phase 5 or 6 changes | `PERFORMANCE.md` — dated, commit-hashed table of p50/p95/p99/throughput per scenario, kept comparable across runs |
+| **test-coverage-guard** | Any new route, verifier check, or deny-reason added | Ensures a matching test exists in the established deny-reason taxonomy before considering the task done |
+| **api-contract-sync** | Any change to a route's request/response shape | `API_REFERENCE.md` stays in sync with actual route code, so the README's token schema table never silently drifts from reality |
+| **security-checklist** | Before any commit touching auth/signing/secrets | No plaintext keys/secrets, signing alg still asymmetric, TTL/scope defaults haven't quietly loosened, no full-token logging |
+| **cost-guard** | Before/after any Terraform apply | `COST_LOG.md` — which AWS resources exist, approximate hourly cost, reminder to `terraform destroy` after a session |
+| **readme-drift-check** | Before marking a phase "done" | Diffs README's claimed features/test-case table against what's actually implemented |
+| **runbook-writer** | After any real dev-time incident (Redis down, ECS crash-loop, IAM denial) | `RUNBOOK.md` — what broke, why, how it was fixed; strong interview material |
+
+**Priority pair:** `decision-log` and `performance-log` — these directly back the
+Phase 5/6/7 discussion points (consistency, staleness, throughput) with real
+artifacts instead of assertions, and are the two most likely to actually get used
+under time pressure. The rest are valuable hygiene but can be added incrementally.
+
+### Skills folder structure
+
+```
+agent-cred/
+├── .claude/
+│   └── skills/
+│       ├── decision-log/SKILL.md
+│       ├── performance-log/SKILL.md
+│       ├── test-coverage-guard/SKILL.md
+│       ├── api-contract-sync/SKILL.md
+│       ├── security-checklist/SKILL.md
+│       ├── cost-guard/SKILL.md
+│       ├── readme-drift-check/SKILL.md
+│       └── runbook-writer/SKILL.md
+├── DECISIONS.md
+├── PERFORMANCE.md
+├── API_REFERENCE.md
+├── COST_LOG.md
+├── RUNBOOK.md
+└── ... (rest of structure as above)
+```
+
+`decision-log` and `performance-log` are fully drafted and ready to drop in as-is;
+the rest are scoped above and can be written in the same ADR-lite style when time
+allows.
+
+
+## 7. Total Time Estimate
+
+| Phase | Hours |
+|---|---|
+| 0 — Setup | 1-2 |
+| 1 — Issuer | 4-6 |
+| 2 — Verifier SDK | 4-6 |
+| 3 — Demo agents | 4-6 |
+| 4 — Audit log + revocation | 3-5 |
+| 5 — Distributed revocation cache | 5-7 |
+| 6 — Rate limiting per credential | 4-6 |
+| 7 — Simple load test | 2-3 |
+| 8 — Dockerization | 1-2 |
+| 9 — CI | 2 |
+| 10 — Terraform | 4-6 |
+| 11 — CD | 2-3 |
+| 12 — README | 2-4 |
+| **Total** | **~39-58h** |
+| Debugging buffer (IAM/networking/Redis config, always underestimated) | +4-7 |
+
+**Scoping note:** Phases 5-7 add ~11-16h on top of the original plan. If time is
+tight, Phase 6 (rate limiting) is the safer cut than Phase 5 (revocation cache) —
+the cache/consistency story is the stronger, more distinctive interview signal of
+the two. Don't cut both; that removes the entire "systems thinking" layer that
+differentiates this from the original v1 plan.
+
+## 8. Specific Requirements / Non-Negotiables
+
+- **Asymmetric signing (ES256), not shared secret** — mirrors cross-organizational trust in real systems; a core talking point.
+- **`aud` claim enforced, not optional** — invocation-bound, not a bearer token usable anywhere.
+- **Revocation checked before TTL expiry** — the specific known gap you're addressing; don't skip this even under time pressure.
+- **All 6 verifier test cases must exist and pass** before moving to demo agents — this is the credibility core of the whole project.
+- **Redis fallback must fail-safe, not fail-open** — if Redis is unreachable, the verifier falls back to Postgres for revocation checks; it must never treat "cache unavailable" as "not revoked."
+- **The staleness-window demo (Phase 5) must produce an actual recorded number** (e.g., "5s sync interval → up to 5s stale-allow window") — this is the single most quotable line from the whole project; don't skip capturing it.
+- **Rate limiting must be keyed by `principal:scope`, not `jti`** — keying by token ID alone allows trivial evasion via re-issuance and defeats the point of the feature.
+- **Terraform kept small and fully explainable** — resist the urge to add modules/environments "to be safe." Simplicity you can defend beats scope you can't.
+- **Cost control** — `terraform destroy` after each work session; RDS db.t4g.micro only; no NAT gateway if avoidable (adds ongoing cost) — use public subnets with tight security groups for this demo-scale project, and say so explicitly in the README as a known simplification.
+- **Don't let this dilute your resume** — position as your AI-infra/LLMOps differentiator project, not a fourth generic project. If resume space is tight, it should replace a weaker existing bullet, not just add volume.
