@@ -74,3 +74,25 @@ pnpm issuer:test:integration
 pnpm --filter @agent-cred/issuer typecheck
 pnpm --filter @agent-cred/issuer build
 ```
+
+## Phase 2: verifier SDK
+
+The verifier SDK validates an ES256 credential's signature, issuer, expiry, audience,
+required claims, revocation status, and exact requested scope. It fails closed if the
+revocation source is unavailable. A Fastify pre-handler is included for protecting
+individual routes and attaches verified claims to allowed requests.
+
+The public API and middleware response contract are documented in
+[API_REFERENCE.md](./API_REFERENCE.md). Run its verification gates with PostgreSQL
+healthy:
+
+```sh
+pnpm verifier:test
+pnpm verifier:test:integration
+pnpm --filter @agent-cred/verifier-sdk typecheck
+pnpm --filter @agent-cred/verifier-sdk build
+```
+
+Phase 2 reads the existing `revocations` table. Phase 4 will add the revoke endpoint
+and audit-log writes; Phase 5 will replace the injected database lookup with a
+Redis-backed implementation.

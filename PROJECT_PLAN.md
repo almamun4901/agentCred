@@ -2,7 +2,7 @@
 
 ## Project Progress
 
-Last updated: **2026-07-17**
+Last updated: **2026-07-18**
 
 This file is the source of truth for implementation progress. Task checkboxes are
 updated only after the work has been implemented and verified. Architecture choices,
@@ -12,7 +12,7 @@ alternatives, and consequences are recorded in [DECISIONS.md](./DECISIONS.md).
 |---|---|---|
 | Phase 0 — Setup | Complete | Workspace discovery and PostgreSQL schema smoke test passed |
 | Phase 1 — Issuer Service | Complete | ES256 signing, issuance routes, PostgreSQL integration, and manual verification passed |
-| Phase 2 — Verifier SDK | Not started | Depends on the Phase 1 token contract |
+| Phase 2 — Verifier SDK | Complete | Strict ES256 verification, PostgreSQL revocation checks, Fastify middleware, and automated verification passed |
 | Phase 3 — Demo Agents | Not started | Depends on issuer and verifier |
 | Phase 4 — Audit + Revocation | Not started | Initial tables exist; application behavior remains |
 | Phase 5 — Revocation Cache | Not started | Redis intentionally deferred |
@@ -240,14 +240,14 @@ agent-cred/
 ---
 
 ### Phase 2 — Verifier SDK (4-6h)
-- `verify.ts` — pure function: `verifyCredential(token, requestedAction, expectedAud)`.
-  - Checks signature validity.
-  - Checks expiry (throws/handled by `jose` automatically).
-  - Checks `aud` matches expected audience.
-  - Checks `jti` against revocation list (DB call).
-  - Checks `requestedAction` is present in `scope`.
-  - Returns `{decision: 'allow'|'deny', reason?, claims?}`.
-- `middleware.ts` — Fastify `preHandler` wrapper that calls `verifyCredential` and short-circuits with 403 on deny.
+- [x] Strict ES256 signature, issuer, expiry, audience, and credential-claim validation.
+- [x] Dependency-injected revocation interface with a PostgreSQL implementation.
+- [x] Exact, case-sensitive scope enforcement after the revocation check.
+- [x] Stable typed allow/deny results with sanitized failure reasons.
+- [x] Fastify bearer-token `preHandler` with 401, 403, and 503 behavior.
+- [x] Verified claims attached to allowed requests only.
+- [x] Package exports, scripts, type declarations, and usage documentation.
+- [x] Unit, middleware, PostgreSQL integration, typecheck, and build gates passed.
 
 **Testing after this task (this is the core logic — test thoroughly):**
 - Unit test: valid token + in-scope action → allow.
@@ -257,6 +257,25 @@ agent-cred/
 - Unit test: action not in scope → deny, reason `scope_exceeded`.
 - Unit test: malformed/tampered signature → deny, reason `invalid_signature`.
 - These 6 cases are the backbone of your demo narrative — don't skip any.
+
+**Verification recorded 2026-07-18:**
+
+- Twenty-seven unit and middleware tests passed. Coverage includes allowed credentials,
+  expiry, audience and issuer mismatch, revocation-before-scope ordering, exact scope
+  matching, tampering, malformed claims, revocation-store failure, bearer parsing,
+  HTTP status mapping, request claim attachment, route short-circuiting, and token
+  non-disclosure.
+- A PostgreSQL integration test inserted an issuance, confirmed it was initially not
+  revoked, inserted its JTI into `revocations`, and confirmed the signed credential was
+  denied as `revoked`. Test data was removed afterward.
+- Type-checking and the production build passed for `@agent-cred/verifier-sdk`.
+
+**Phase boundary:**
+
+- Phase 2 owns the revocation read path and fails closed when PostgreSQL is unavailable.
+- Phase 4 will add the revoke write endpoint and verification audit logging.
+- Phase 5 can replace the injected PostgreSQL checker with Redis without changing the
+  cryptographic or scope-verification logic.
 
 ---
 

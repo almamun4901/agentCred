@@ -126,3 +126,24 @@ instead of erasing the original context.
   rather than being retried because their practical probability is negligible.
 - **Revisit if:** Signing moves to a metered remote KMS or issuance throughput makes
   discarded signing operations operationally meaningful.
+
+## ADR-0009: Inject revocation checks into a fail-closed verifier
+
+- **Date:** 2026-07-18
+- **Status:** Accepted
+- **Context:** Credential verification combines deterministic cryptographic and scope
+  checks with a stateful revocation lookup. A direct PostgreSQL dependency in the core
+  verifier would make testing harder and force a rewrite when Redis is introduced.
+- **Options considered:** Query PostgreSQL directly inside verification; defer real
+  revocation behavior; or inject an asynchronous `isRevoked(jti)` capability.
+- **Decision:** Configure a reusable verifier with its public key, trusted issuer, and
+  injected revocation checker. Provide PostgreSQL as the Phase 2 adapter, fail closed
+  with `verification_unavailable` on lookup errors, and evaluate revocation before
+  scope. Accept only ES256 tokens and exact, case-sensitive scope matches.
+- **Tradeoffs:** Dependency injection adds a factory and one interface, but isolates
+  storage, enables deterministic tests, and lets Phase 5 introduce Redis without
+  changing the credential decision path. Failing closed preserves authorization
+  safety during an outage but reduces availability until revocation reads recover.
+- **Revisit if:** Availability requirements demand a bounded-staleness fallback policy,
+  issuer key rotation requires a JWKS resolver, or scope semantics expand beyond exact
+  string membership.

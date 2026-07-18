@@ -21,6 +21,8 @@
     "issuer:keys": "pnpm --filter @agent-cred/issuer keys:generate",
     "issuer:dev": "pnpm --filter @agent-cred/issuer dev",
     "issuer:test": "pnpm --filter @agent-cred/issuer test",
-    "issuer:test:integration": "pnpm --filter @agent-cred/issuer test:integration"
+    "issuer:test:integration": "pnpm --filter @agent-cred/issuer test:integration",
+    "verifier:test": "pnpm --filter @agent-cred/verifier-sdk test",
+    "verifier:test:integration": "pnpm --filter @agent-cred/verifier-sdk test:integration"
   }
 }
