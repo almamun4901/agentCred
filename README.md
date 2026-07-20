@@ -93,6 +93,61 @@ pnpm --filter @agent-cred/verifier-sdk typecheck
 pnpm --filter @agent-cred/verifier-sdk build
 ```
 
-Phase 2 reads the existing `revocations` table. Phase 4 will add the revoke endpoint
-and audit-log writes; Phase 5 will replace the injected database lookup with a
-Redis-backed implementation.
+Phase 2 reads the existing `revocations` table. Phase 3 adds verification audit writes,
+Phase 4 will add the revoke endpoint, and Phase 5 will replace the injected database
+lookup with a Redis-backed implementation.
+
+## Phase 3: demo agents
+
+Phase 3 demonstrates attempted overreach rather than simulating an intelligent agent.
+Agent A is a deterministic one-shot client; Agent B exposes a static protected quote
+so the credential boundary remains the visible behavior.
+
+Run PostgreSQL first. On a fresh volume, Compose applies `db/schema.sql`
+automatically; do not reapply that non-idempotent file to an initialized database.
+
+```sh
+pnpm db:up
+pnpm issuer:keys # first run only; generation refuses to overwrite existing keys
+```
+
+Then use three terminals for the local services and demo trigger:
+
+```sh
+# Terminal 1
+pnpm issuer:dev
+
+# Terminal 2
+pnpm agent-b:dev
+
+# Terminal 3
+pnpm agent-a:demo
+```
+
+Agent A prints a unique `principal`. Use it to retrieve only that run's audit evidence:
+
+```sh
+docker compose exec -T postgres psql -U agentcred -d agentcred -c \
+  "SELECT jti, decision, denial_reason, requested_action, audience, verified_at FROM verification_log WHERE principal = 'PASTE_PRINTED_PRINCIPAL' ORDER BY id;"
+```
+
+The result must contain a `deny` / `scope_exceeded` row followed by an `allow` row.
+Neither terminal output nor audit metadata includes the bearer credentials.
+
+Run the complete local Phase 3 gate with PostgreSQL healthy:
+
+```sh
+pnpm phase3:verify
+```
+
+CI remains deferred to Phase 9; this command and the manual walkthrough are the Phase
+3 completion evidence.
+
+### Audit availability tradeoff
+
+Agent B awaits each audit insert so the response and durable evidence remain closely
+correlated. This adds one database round trip. A failed insert is retried once after
+100 ms; if both attempts fail, Agent B logs the audit gap loudly but preserves the
+already-finalized authorization response. This fail-open audit policy favors service
+availability. A compliance-oriented system may instead fail closed, while a
+latency-oriented system may use an outbox or fire-and-forget queue.

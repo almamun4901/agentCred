@@ -2,6 +2,8 @@ import { generateKeyPair, SignJWT } from "jose";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createCredentialVerifier,
+  type DecisionObserver,
+  type DecisionObserverErrorHandler,
   type IsRevoked,
 } from "../src/verify.js";
 
@@ -175,6 +177,88 @@ describe("createCredentialVerifier", () => {
     await expect(createVerifier()(token, "read:weather", "agent-b")).resolves.toEqual({
       decision: "deny",
       reason: "verification_unavailable",
+    });
+  });
+
+  it("observes allowed and scope-denied decisions with trusted identifiers", async () => {
+    const onDecision = vi.fn<DecisionObserver>();
+    const verifier = createCredentialVerifier({
+      publicKey,
+      issuer: "test-issuer",
+      isRevoked,
+      onDecision,
+    });
+    const allowedToken = await signToken(privateKey);
+    const deniedToken = await signToken(privateKey, { scope: ["read:other"] });
+
+    await verifier(allowedToken, "read:weather", "agent-b");
+    await verifier(deniedToken, "read:weather", "agent-b");
+
+    expect(onDecision).toHaveBeenNthCalledWith(1, {
+      jti: "test-jti",
+      principal: "company-x",
+      requestedAction: "read:weather",
+      audience: "agent-b",
+      decision: "allow",
+      denialReason: null,
+    });
+    expect(onDecision).toHaveBeenNthCalledWith(2, {
+      jti: "test-jti",
+      principal: "company-x",
+      requestedAction: "read:weather",
+      audience: "agent-b",
+      decision: "deny",
+      denialReason: "scope_exceeded",
+    });
+  });
+
+  it("does not expose decoded identifiers from an untrusted credential", async () => {
+    const onDecision = vi.fn<DecisionObserver>();
+    const token = await signToken(privateKey, { aud: "agent-c" });
+    const verifier = createCredentialVerifier({
+      publicKey,
+      issuer: "test-issuer",
+      isRevoked,
+      onDecision,
+    });
+
+    await verifier(token, "read:weather", "agent-b");
+
+    expect(onDecision).toHaveBeenCalledWith({
+      jti: null,
+      principal: null,
+      requestedAction: "read:weather",
+      audience: "agent-b",
+      decision: "deny",
+      denialReason: "aud_mismatch",
+    });
+  });
+
+  it("contains observer and observer-error failures after finalizing the decision", async () => {
+    const observerError = new Error("audit unavailable");
+    const onDecision = vi.fn<DecisionObserver>().mockRejectedValue(observerError);
+    const onDecisionError = vi
+      .fn<DecisionObserverErrorHandler>()
+      .mockRejectedValue(new Error("logger unavailable"));
+    const token = await signToken(privateKey);
+    const verifier = createCredentialVerifier({
+      publicKey,
+      issuer: "test-issuer",
+      isRevoked,
+      onDecision,
+      onDecisionError,
+    });
+
+    const result = await verifier(token, "read:weather", "agent-b");
+
+    expect(result).toMatchObject({ decision: "allow" });
+    expect(onDecisionError).toHaveBeenCalledWith(observerError, {
+      jti: "test-jti",
+      principal: "company-x",
+      requestedAction: "read:weather",
+      audience: "agent-b",
+      decision: "allow",
+      denialReason: null,
     });
   });
 

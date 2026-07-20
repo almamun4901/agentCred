@@ -171,7 +171,61 @@ when revocation status cannot be checked. Error bodies use
 `{ "error": "credential_denied", "reason": "..." }` and never include the token.
 
 The PostgreSQL adapter owns no connection lifecycle; the consuming service creates
-and closes its pool. Phase 4 adds revocation writes and audit logging. Phase 5 may
-replace the injected checker with Redis without changing the verifier API.
+and closes its pool. Phase 4 adds revocation writes. Phase 5 may replace the injected
+checker with Redis without changing the verifier API.
 
-Last verified against code: 2026-07-18.
+### Verification decision observer
+
+Consumers may configure `onDecision` to synchronously observe a finalized decision.
+Its readonly event contains `requestedAction`, `audience`, `decision`, and
+`denialReason`. The `jti` and `principal` fields are populated only after signature
+and required-claim validation; they remain null for untrusted credentials.
+
+```ts
+const verifyCredential = createCredentialVerifier({
+  publicKey,
+  issuer: "agentcred-issuer",
+  isRevoked,
+  onDecision: async (event) => persistAuditEvent(event),
+  onDecisionError: (error, event) => logger.error({ error, event }),
+});
+```
+
+The verifier finalizes its result before invoking the observer. Observer and
+`onDecisionError` failures are contained and cannot replace or reject the original
+authorization result. Because `onDecision` is awaited, consumers choose whether to
+trade response latency for tighter correlation with durable audit evidence.
+
+## Agent B configuration
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `DATABASE_URL` | local AgentCred PostgreSQL URL | Revocation reads, readiness, and audit writes |
+| `VERIFYING_PUBLIC_KEY_PATH` | `../../issuer/keys/public.pem` | Issuer ES256 public key |
+| `ISSUER_ID` | `agentcred-issuer` | Exact trusted JWT issuer |
+| `AGENT_B_AUDIENCE` | `agent-b` | Exact accepted JWT audience |
+| `PORT` | `3001` | Loopback-only HTTP port |
+
+Agent B refuses to listen if PostgreSQL is unavailable.
+
+## GET /get-quote
+
+Requires `Authorization: Bearer <token>`, audience `agent-b`, and exact scope
+`read:quote:basic`.
+
+**Response — 200:**
+
+```json
+{
+  "quote": "Trust is scoped, verified, and revocable.",
+  "served_to": "<verified-principal>"
+}
+```
+
+Insufficient scope returns `403` with `scope_exceeded`. Other credential errors use
+the verifier middleware mappings documented above. Every credential verification is
+written synchronously to `verification_log`; Agent B retries once after 100 ms and
+logs a structured audit-gap error if both inserts fail without changing the HTTP
+authorization result.
+
+Last verified against code: 2026-07-20.

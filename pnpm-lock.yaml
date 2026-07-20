@@ -8,9 +8,51 @@ importers:
 
   .: {}
 
-  demo-agents/agent-a: {}
+  demo-agents/agent-a:
+    devDependencies:
+      '@types/node':
+        specifier: ^24.10.1
+        version: 24.13.3
+      tsx:
+        specifier: ^4.21.0
+        version: 4.23.1
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: ^4.0.15
+        version: 4.1.10(@types/node@24.13.3)(vite@8.1.5(@types/node@24.13.3)(esbuild@0.28.1)(tsx@4.23.1))
 
-  demo-agents/agent-b: {}
+  demo-agents/agent-b:
+    dependencies:
+      '@agent-cred/verifier-sdk':
+        specifier: workspace:*
+        version: link:../../verifier-sdk
+      fastify:
+        specifier: ^5.6.2
+        version: 5.10.0
+      jose:
+        specifier: ^6.1.2
+        version: 6.2.3
+      pg:
+        specifier: ^8.16.3
+        version: 8.22.0
+    devDependencies:
+      '@types/node':
+        specifier: ^24.10.1
+        version: 24.13.3
+      '@types/pg':
+        specifier: ^8.15.6
+        version: 8.20.0
+      tsx:
+        specifier: ^4.21.0
+        version: 4.23.1
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: ^4.0.15
+        version: 4.1.10(@types/node@24.13.3)(vite@8.1.5(@types/node@24.13.3)(esbuild@0.28.1)(tsx@4.23.1))
 
   issuer:
     dependencies:

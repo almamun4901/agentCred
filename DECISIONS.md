@@ -147,3 +147,27 @@ instead of erasing the original context.
 - **Revisit if:** Availability requirements demand a bounded-staleness fallback policy,
   issuer key rotation requires a JWKS resolver, or scope semantics expand beyond exact
   string membership.
+
+## ADR-0010: Observe authorization synchronously but fail open on audit errors
+
+- **Date:** 2026-07-20
+- **Status:** Accepted for Phase 3
+- **Context:** The overreach demo needs durable, trusted evidence for both its denied
+  and allowed calls. Logging only in Agent B would duplicate verifier logic, while
+  fire-and-forget logging could let the demo finish before its evidence is stored.
+- **Options considered:** Await and fail closed; await and preserve the authorization
+  outcome; or enqueue/fire-and-forget the audit event.
+- **Decision:** Add a typed decision observer to the verifier. Finalize the immutable
+  authorization result before awaiting observation. Agent B inserts the event,
+  retries once after 100 ms, and logs a structured error after the second failure.
+  Observer and error-handler exceptions are contained and never change the finalized
+  result.
+- **Tradeoffs:** Awaiting the insert adds a PostgreSQL round trip and a visible retry
+  delay during failure, but tightly correlates the response with durable evidence.
+  Preserving the result protects availability but permits explicit audit gaps and is
+  not sufficient for every compliance threat model. Fire-and-forget would reduce
+  latency; fail-closed auditing would provide stronger completeness guarantees.
+- **Revisit if:** Audit completeness becomes mandatory, request latency requires an
+  outbox/queue, or delivery needs idempotency and stronger retry guarantees. When
+  Phase 5 puts Redis on Agent B's request path, extend its startup readiness check to
+  Redis rather than silently retaining a PostgreSQL-only probe.

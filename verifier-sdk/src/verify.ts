@@ -31,10 +31,27 @@ export type VerificationResult =
 
 export type IsRevoked = (jti: string) => Promise<boolean>;
 
+export interface VerificationEvent {
+  readonly jti: string | null;
+  readonly principal: string | null;
+  readonly requestedAction: string;
+  readonly audience: string;
+  readonly decision: "allow" | "deny";
+  readonly denialReason: DenialReason | null;
+}
+
+export type DecisionObserver = (event: VerificationEvent) => Promise<void> | void;
+export type DecisionObserverErrorHandler = (
+  error: unknown,
+  event: VerificationEvent,
+) => Promise<void> | void;
+
 export interface CredentialVerifierOptions {
   publicKey: CryptoKey;
   issuer: string;
   isRevoked: IsRevoked;
+  onDecision?: DecisionObserver;
+  onDecisionError?: DecisionObserverErrorHandler;
 }
 
 export type VerifyCredential = (
@@ -106,6 +123,25 @@ function mapJoseError(error: unknown): DenialReason {
   return "invalid_signature";
 }
 
+async function observeDecision(
+  options: CredentialVerifierOptions,
+  event: VerificationEvent,
+): Promise<void> {
+  if (options.onDecision === undefined) {
+    return;
+  }
+
+  try {
+    await options.onDecision(event);
+  } catch (error: unknown) {
+    try {
+      await options.onDecisionError?.(error, event);
+    } catch {
+      // Observation is deliberately isolated from the finalized auth decision.
+    }
+  }
+}
+
 export function createCredentialVerifier(
   options: CredentialVerifierOptions,
 ): VerifyCredential {
@@ -118,12 +154,28 @@ export function createCredentialVerifier(
     requestedAction,
     expectedAudience,
   ) {
+    const finalize = async (
+      result: VerificationResult,
+      claims: VerifiedCredentialClaims | null,
+    ): Promise<VerificationResult> => {
+      const event: VerificationEvent = Object.freeze({
+        jti: claims?.jti ?? null,
+        principal: claims?.principal ?? null,
+        requestedAction,
+        audience: expectedAudience,
+        decision: result.decision,
+        denialReason: result.decision === "deny" ? result.reason : null,
+      });
+      await observeDecision(options, event);
+      return result;
+    };
+
     if (
       !isNonBlankString(token) ||
       !isNonBlankString(requestedAction) ||
       !isNonBlankString(expectedAudience)
     ) {
-      return { decision: "deny", reason: "invalid_claims" };
+      return finalize({ decision: "deny", reason: "invalid_claims" }, null);
     }
 
     let payload: JWTPayload;
@@ -138,29 +190,32 @@ export function createCredentialVerifier(
       payload = verified.payload;
       typ = verified.protectedHeader.typ;
     } catch (error: unknown) {
-      return { decision: "deny", reason: mapJoseError(error) };
+      return finalize({ decision: "deny", reason: mapJoseError(error) }, null);
     }
 
     const claims = toVerifiedClaims(payload);
     if (typ !== "JWT" || claims === null) {
-      return { decision: "deny", reason: "invalid_claims" };
+      return finalize({ decision: "deny", reason: "invalid_claims" }, null);
     }
 
     let revoked: boolean;
     try {
       revoked = await options.isRevoked(claims.jti);
     } catch {
-      return { decision: "deny", reason: "verification_unavailable" };
+      return finalize(
+        { decision: "deny", reason: "verification_unavailable" },
+        claims,
+      );
     }
 
     if (revoked) {
-      return { decision: "deny", reason: "revoked" };
+      return finalize({ decision: "deny", reason: "revoked" }, claims);
     }
 
     if (!claims.scope.includes(requestedAction)) {
-      return { decision: "deny", reason: "scope_exceeded" };
+      return finalize({ decision: "deny", reason: "scope_exceeded" }, claims);
     }
 
-    return { decision: "allow", claims };
+    return finalize({ decision: "allow", claims }, claims);
   };
 }

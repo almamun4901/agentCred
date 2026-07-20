@@ -13,7 +13,7 @@ alternatives, and consequences are recorded in [DECISIONS.md](./DECISIONS.md).
 | Phase 0 — Setup | Complete | Workspace discovery and PostgreSQL schema smoke test passed |
 | Phase 1 — Issuer Service | Complete | ES256 signing, issuance routes, PostgreSQL integration, and manual verification passed |
 | Phase 2 — Verifier SDK | Complete | Strict ES256 verification, PostgreSQL revocation checks, Fastify middleware, and automated verification passed |
-| Phase 3 — Demo Agents | Not started | Depends on issuer and verifier |
+| Phase 3 — Demo Agents | Complete | Deny-then-allow live demo and PostgreSQL audit evidence passed |
 | Phase 4 — Audit + Revocation | Not started | Initial tables exist; application behavior remains |
 | Phase 5 — Revocation Cache | Not started | Redis intentionally deferred |
 | Phase 6 — Rate Limiting | Not started | Policy and Redis implementation remain |
@@ -273,22 +273,50 @@ agent-cred/
 **Phase boundary:**
 
 - Phase 2 owns the revocation read path and fails closed when PostgreSQL is unavailable.
-- Phase 4 will add the revoke write endpoint and verification audit logging.
+- Phase 3 adds verification audit logging; Phase 4 will add the revoke write endpoint.
 - Phase 5 can replace the injected PostgreSQL checker with Redis without changing the
   cryptographic or scope-verification logic.
 
 ---
 
-### Phase 3 — Demo Agents (4-6h)
-- **Agent B**: mock service with `GET /get-quote` protected by verifier middleware, requiring scope `read:quote:basic`.
-- **Agent A**: script that requests a credential from the issuer (scope `read:weather` only), then:
+### Phase 3 — Demo Agents (4-6h) — Complete 2026-07-20
+- [x] **Agent B**: mock service with `GET /get-quote` protected by verifier middleware, requiring scope `read:quote:basic`.
+- [x] **Agent A**: script that requests a credential from the issuer (scope `read:weather` only), then:
   1. Calls `/get-quote` on Agent B with a token that lacks the right scope → expect 403, log it.
   2. Requests a new token with correct scope → calls `/get-quote` again → expect 200.
-- Wire both allowed and denied attempts into `verification_log`.
+- [x] Wire both allowed and denied attempts into `verification_log` through an awaited, fail-open verifier observer.
 
 **Testing after this task:**
 - End-to-end script run: confirm one denied call and one allowed call appear correctly in `verification_log` with correct `decision` and `denial_reason`.
 - Manual walkthrough: this is your "attempted overreach gets blocked" demo — record the terminal output or a short screen capture for your portfolio/README.
+
+**Verification recorded 2026-07-20:**
+
+- The aggregate `pnpm phase3:verify` gate passed against PostgreSQL: 54 unit tests
+  across the issuer, verifier, and demo agents; four database-backed integration
+  cases; type-checking; and production builds for all affected packages.
+- Observer tests prove trusted identifiers are available for scope decisions,
+  untrusted JWT data is not exposed, and failures in both the observer and its error
+  handler cannot change the finalized authorization result.
+- Agent B's real-timer failure tests confirmed one 100 ms retry, loud final-error
+  reporting, token non-disclosure, and unchanged 200/403 responses.
+- A live loopback walkthrough issued two credentials for principal
+  `phase3-demo-c26c7cdb-41d2-47ef-be9b-a624edbd9471`. Agent A printed the expected
+  403 denial followed by the 200 quote response without printing either credential.
+- PostgreSQL contained exactly two matching audit rows in order: `deny` with
+  `scope_exceeded`, then `allow` with a null denial reason. Both recorded action
+  `read:quote:basic`, audience `agent-b`, and timestamps six milliseconds apart.
+
+**Known limitations accepted for Phase 3:**
+
+- Audit writes are awaited and add a database round trip, but remain fail-open after
+  one retry. A stricter compliance threat model may require fail-closed behavior or a
+  durable outbox.
+- Agent A is deterministic and Agent B returns static content; the demo proves the
+  credential boundary, not agent intelligence or business logic.
+- Local services remain separate Node processes. Redis readiness, service
+  containerization, revocation writes, and CI enforcement remain in their documented
+  later phases.
 
 ---
 
