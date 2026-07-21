@@ -38,7 +38,7 @@
     "phase7:benchmark": "pnpm --filter @agent-cred/verifier-sdk build && node verifier-sdk/scripts/phase7-benchmark.mjs",
     "phase7:benchmark:smoke": "pnpm phase7:benchmark --duration 0.05 --warmup 0.05 --concurrency 2 --sweep 1,2 --trials 1",
     "phase8:verify:containers": "sh scripts/phase8-verify.sh",
-    "phase3:test:unit": "pnpm issuer:test && pnpm verifier:test && pnpm --filter @agent-cred/verifier-sdk build && pnpm --filter @agent-cred/agent-b test && pnpm --filter @agent-cred/agent-a test",
+    "phase3:test:unit": "pnpm --filter @agent-cred/verifier-sdk build && pnpm issuer:test && pnpm verifier:test && pnpm --filter @agent-cred/agent-b test && pnpm --filter @agent-cred/agent-a test",
     "phase3:test:integration": "pnpm issuer:test:integration && pnpm verifier:test:integration && pnpm --filter @agent-cred/agent-b test:integration",
     "phase3:typecheck": "pnpm --filter @agent-cred/verifier-sdk typecheck && pnpm --filter @agent-cred/issuer typecheck && pnpm --filter @agent-cred/agent-b typecheck && pnpm --filter @agent-cred/agent-a typecheck",
     "phase3:build": "pnpm --filter @agent-cred/verifier-sdk build && pnpm --filter @agent-cred/issuer build && pnpm --filter @agent-cred/agent-b build && pnpm --filter @agent-cred/agent-a build",
