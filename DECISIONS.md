@@ -273,3 +273,26 @@ instead of erasing the original context.
   production signing moves to KMS, ECS injects keys from Secrets Manager, key rotation
   requires overlapping verification keys/JWKS, or image-size evidence justifies a
   different workspace packaging strategy.
+
+## ADR-0015: Use one comprehensive CI gate backed by the Phase 8 verifier
+
+- **Date:** 2026-07-21
+- **Status:** Accepted for Phase 9
+- **Context:** Pull requests need an automated merge signal that covers code quality,
+  real PostgreSQL and Redis behavior, production builds, and the container security
+  and demo lifecycle without letting local and CI verification drift apart.
+- **Options considered:** Separate parallel lint/unit/integration/image jobs; a fast PR
+  gate with the container proof only on `main`; or one job that runs the established
+  Phase 8 gate on every push and pull request.
+- **Decision:** Run one least-privilege `CI` job that installs the pinned toolchain,
+  starts the Compose backing services, lints the repository, and invokes
+  `pnpm phase8:verify`. Pin reusable actions to immutable commits, cancel superseded
+  runs, impose a 45-minute timeout, always remove CI Compose resources, and never push
+  an image from this workflow.
+- **Tradeoffs:** A single required signal is simple to reproduce and prevents test
+  orchestration from diverging, but it is slower than a split fast path and cannot
+  parallelize independent checks. Rebuilding in the isolated Phase 8 proof spends
+  extra runner time in exchange for exercising the exact production image path.
+- **Revisit if:** CI duration regularly approaches the timeout, queue time slows
+  development, the monorepo grows enough to justify change-based jobs, or Phase 11
+  needs a separately attestable image-build artifact.
