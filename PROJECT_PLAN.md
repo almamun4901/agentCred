@@ -14,7 +14,7 @@ alternatives, and consequences are recorded in [DECISIONS.md](./DECISIONS.md).
 | Phase 1 — Issuer Service | Complete | ES256 signing, issuance routes, PostgreSQL integration, and manual verification passed |
 | Phase 2 — Verifier SDK | Complete | Strict ES256 verification, PostgreSQL revocation checks, Fastify middleware, and automated verification passed |
 | Phase 3 — Demo Agents | Complete | Deny-then-allow live demo and PostgreSQL audit evidence passed |
-| Phase 4 — Audit + Revocation | Not started | Initial tables exist; application behavior remains |
+| Phase 4 — Audit + Revocation | Complete | Idempotent revoke API, denial report, and live lifecycle verified |
 | Phase 5 — Revocation Cache | Not started | Redis intentionally deferred |
 | Phase 6 — Rate Limiting | Not started | Policy and Redis implementation remain |
 | Phase 7 — Load Test | Not started | Requires working verifier paths |
@@ -273,7 +273,7 @@ agent-cred/
 **Phase boundary:**
 
 - Phase 2 owns the revocation read path and fails closed when PostgreSQL is unavailable.
-- Phase 3 adds verification audit logging; Phase 4 will add the revoke write endpoint.
+- Phase 3 adds verification audit logging; Phase 4 adds the revoke write endpoint.
 - Phase 5 can replace the injected PostgreSQL checker with Redis without changing the
   cryptographic or scope-verification logic.
 
@@ -315,19 +315,49 @@ agent-cred/
 - Agent A is deterministic and Agent B returns static content; the demo proves the
   credential boundary, not agent intelligence or business logic.
 - Local services remain separate Node processes. Redis readiness, service
-  containerization, revocation writes, and CI enforcement remain in their documented
-  later phases.
+  containerization, and CI enforcement remain in their documented later phases.
 
 ---
 
 ### Phase 4 — Audit Log + Revocation (3-5h)
-- `POST /revoke` — takes `jti`, inserts into `revocations` table.
-- Update `verify.ts` to check `revocations` table before allowing (already covered in Phase 2 tests, but now backed by a real revoke endpoint).
-- Add a simple query/report script: "show all denials in the last hour, grouped by reason."
+
+- [x] `POST /revoke` validates a JTI and optional reason, then atomically creates or
+  returns an immutable first-write revocation.
+- [x] Unknown issuances return `404`; duplicate and concurrent requests remain
+  idempotent without replacing the original timestamp or reason.
+- [x] The existing verifier revocation read path is exercised through the real write
+  endpoint without changing the verifier contract.
+- [x] `pnpm report:denials` shows denials from the previous hour grouped by reason.
 
 **Testing after this task:**
 - Integration test: issue a token, revoke it, attempt to use it → expect deny with reason `revoked`, even though `exp` has not passed.
 - Confirm revocation check happens fast enough not to bottleneck the demo (should be a single indexed lookup).
+
+**Verification recorded 2026-07-20:**
+
+- The aggregate `pnpm phase4:verify` gate passed: 65 unit tests across all packages,
+  nine PostgreSQL integration cases, all affected typechecks, and all production
+  builds.
+- Route and repository coverage includes malformed input, extra-field rejection,
+  optional reasons, sanitized failures, unknown JTIs, repeated revocation, and two
+  concurrent requests producing exactly one immutable row.
+- The lifecycle integration issued a valid unexpired credential, allowed it, revoked
+  it through `POST /revoke`, denied the same token as `revoked`, and stored ordered
+  allow/deny audit evidence.
+- A live loopback walkthrough for principal `phase4-live-019f808e` returned 200 before
+  revocation, 200 from the revocation endpoint, and 401 `revoked` afterward. The denial
+  report grouped the resulting event under `revoked` without exposing the credential.
+- A rolled-back 1,000-row query-plan check used an `Index Only Scan` on
+  `revocations_pkey`; the measured lookup completed in 0.010 ms on the local database.
+
+**Known limitations accepted for Phase 4:**
+
+- Issuance and revocation remain unauthenticated and loopback-only. Operator
+  authentication and authorization are mandatory before network exposure.
+- Revocation reasons are immutable; corrections require a future append-only
+  annotation model rather than rewriting security evidence.
+- PostgreSQL remains on the request path. Redis propagation and its explicit
+  consistency/staleness tradeoffs remain Phase 5 work.
 
 ---
 

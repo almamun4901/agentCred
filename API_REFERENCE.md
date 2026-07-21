@@ -9,7 +9,7 @@
 | `ISSUER_ID` | `agentcred-issuer` | Value written to the JWT `iss` claim |
 | `PORT` | `3000` | Loopback-only HTTP port |
 
-The Phase 1 issuer is an unauthenticated local-development service. Do not expose it
+The issuer is an unauthenticated local-development service. Do not expose it
 to an untrusted network.
 
 ## POST /issue
@@ -83,6 +83,48 @@ the bearer token.
 { "error": "issuance_not_found" }
 ```
 
+## POST /revoke
+
+Permanently revokes a stored issuance by JTI. The operation is idempotent and
+first-write-wins: retrying it returns the original timestamp and reason instead of
+editing the security record. Expired issuances may still be revoked.
+
+Like `/issue`, this endpoint has no caller authentication and is safe only while the
+issuer remains bound to loopback. A deployed issuer must authenticate and authorize
+revocation operators.
+
+| Field | Type | Required | Validation |
+|---|---|---|---|
+| `jti` | string | yes | non-blank identifier of a stored issuance |
+| `reason` | string | no | non-blank when supplied |
+
+```json
+{
+  "jti": "b3d62e1e-...",
+  "reason": "operator requested"
+}
+```
+
+**Response — 200:** returned for both the first write and later retries.
+
+```json
+{
+  "jti": "b3d62e1e-...",
+  "revoked_at": "2026-07-20T12:34:56.000Z",
+  "reason": "operator requested"
+}
+```
+
+**Response — 404:** no locally stored issuance has that JTI.
+
+```json
+{ "error": "issuance_not_found" }
+```
+
+Malformed input returns `400 validation_error`; an unexpected persistence failure
+returns a sanitized `500 internal_server_error`. The endpoint never accepts or
+returns a bearer credential.
+
 ## JWT contract
 
 The protected header is `{ "alg": "ES256", "typ": "JWT" }`.
@@ -99,7 +141,7 @@ The protected header is `{ "alg": "ES256", "typ": "JWT" }`.
 | `scope` | permitted action strings |
 | `delegation_chain` | empty array in Phase 1 |
 
-Last verified against code: 2026-07-17 (working tree before initial commit).
+Last verified against code: 2026-07-20.
 
 ## Verifier SDK
 
@@ -171,8 +213,8 @@ when revocation status cannot be checked. Error bodies use
 `{ "error": "credential_denied", "reason": "..." }` and never include the token.
 
 The PostgreSQL adapter owns no connection lifecycle; the consuming service creates
-and closes its pool. Phase 4 adds revocation writes. Phase 5 may replace the injected
-checker with Redis without changing the verifier API.
+and closes its pool. The Phase 4 issuer writes revocations through `POST /revoke`.
+Phase 5 may replace the injected checker with Redis without changing the verifier API.
 
 ### Verification decision observer
 

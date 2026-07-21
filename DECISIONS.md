@@ -171,3 +171,25 @@ instead of erasing the original context.
   outbox/queue, or delivery needs idempotency and stronger retry guarantees. When
   Phase 5 puts Redis on Agent B's request path, extend its startup readiness check to
   Redis rather than silently retaining a PostgreSQL-only probe.
+
+## ADR-0011: Make revocation idempotent and first-write-wins
+
+- **Date:** 2026-07-20
+- **Status:** Accepted for Phase 4
+- **Context:** Operators and automated clients must be able to retry a revocation
+  safely without making security evidence mutable. The existing schema permits only
+  locally issued JTIs and already stores an optional reason and database timestamp.
+- **Options considered:** Reject duplicates with `409`; update the reason on every
+  request; or return the original revocation for both the initial call and retries.
+- **Decision:** Keep `POST /revoke`, require a locally stored JTI, and use one atomic
+  `INSERT ... SELECT ... ON CONFLICT` statement. Return `200` with the stored row for
+  both first writes and duplicates, preserve the first timestamp and reason, return
+  `404` for unknown issuances, and permit revocation after credential expiry.
+- **Tradeoffs:** Stable idempotency makes network retries simple and retains immutable
+  evidence, but callers cannot edit an incorrect reason and the endpoint cannot
+  preemptively revoke a JTI unknown to this issuer. The conflict path performs a
+  no-semantic-change update so concurrent requests can reliably return the winning
+  row in one PostgreSQL statement.
+- **Revisit if:** Federated issuers require unknown-JTI revocation, evidence correction
+  needs an append-only annotation model, or the endpoint is exposed beyond loopback
+  and therefore requires operator authentication and authorization.

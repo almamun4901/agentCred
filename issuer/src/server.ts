@@ -8,6 +8,7 @@ import {
   type IssuanceRepository,
 } from "./db.js";
 import { registerIssueRoutes } from "./routes/issue.js";
+import { registerRevokeRoutes } from "./routes/revoke.js";
 import {
   createCredentialSigner,
   importSigningKey,
@@ -23,7 +24,10 @@ export function buildServer(
   dependencies: ServerDependencies,
   options: { logger?: boolean } = {},
 ): FastifyInstance {
-  const app = Fastify({ logger: options.logger ?? false });
+  const app = Fastify({
+    logger: options.logger ?? false,
+    ajv: { customOptions: { removeAdditional: false } },
+  });
 
   app.setErrorHandler((error, request, reply) => {
     const isValidationError =
@@ -41,6 +45,7 @@ export function buildServer(
   });
 
   void app.register(registerIssueRoutes, dependencies);
+  void app.register(registerRevokeRoutes, dependencies);
   return app;
 }
 

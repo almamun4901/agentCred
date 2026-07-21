@@ -14,9 +14,16 @@ export interface Issuance {
   delegation_chain: string[];
 }
 
+export interface Revocation {
+  jti: string;
+  revoked_at: Date;
+  reason: string | null;
+}
+
 export interface IssuanceRepository {
   createIssuance(claims: CredentialClaims): Promise<void>;
   getIssuance(jti: string): Promise<Issuance | null>;
+  revokeIssuance(jti: string, reason: string | null): Promise<Revocation | null>;
 }
 
 export function createPool(connectionString: string): pg.Pool {
@@ -50,6 +57,19 @@ export function createIssuanceRepository(pool: pg.Pool): IssuanceRepository {
          FROM issuances
          WHERE jti = $1`,
         [jti],
+      );
+      return result.rows[0] ?? null;
+    },
+
+    async revokeIssuance(jti, reason) {
+      const result = await pool.query<Revocation>(
+        `INSERT INTO revocations AS existing (jti, reason)
+         SELECT jti, $2
+         FROM issuances
+         WHERE jti = $1
+         ON CONFLICT (jti) DO UPDATE SET jti = existing.jti
+         RETURNING jti, revoked_at, reason`,
+        [jti, reason],
       );
       return result.rows[0] ?? null;
     },

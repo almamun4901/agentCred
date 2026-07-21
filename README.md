@@ -94,8 +94,8 @@ pnpm --filter @agent-cred/verifier-sdk build
 ```
 
 Phase 2 reads the existing `revocations` table. Phase 3 adds verification audit writes,
-Phase 4 will add the revoke endpoint, and Phase 5 will replace the injected database
-lookup with a Redis-backed implementation.
+Phase 4 adds the revoke endpoint, and Phase 5 will replace the injected database lookup
+with a Redis-backed implementation.
 
 ## Phase 3: demo agents
 
@@ -151,3 +151,64 @@ correlated. This adds one database round trip. A failed insert is retried once a
 already-finalized authorization response. This fail-open audit policy favors service
 availability. A compliance-oriented system may instead fail closed, while a
 latency-oriented system may use an outbox or fire-and-forget queue.
+
+## Phase 4: revocation and denial reporting
+
+The issuer's `POST /revoke` endpoint accepts a stored JTI and an optional reason.
+Revocation is permanent and idempotent: a retry returns the original timestamp and
+reason. The endpoint is intentionally unauthenticated for this loopback-only demo and
+must not be exposed to an untrusted network.
+
+With PostgreSQL, the issuer, and Agent B running as described above, issue a correctly
+scoped credential and retain it only in shell variables:
+
+```sh
+ISSUED=$(curl --fail-with-body http://127.0.0.1:3000/issue \
+  --header 'content-type: application/json' \
+  --data '{
+    "agent_id": "agent-a",
+    "principal": "phase4-demo",
+    "scope": ["read:quote:basic"],
+    "aud": "agent-b",
+    "ttl": 300
+  }')
+TOKEN=$(printf '%s' "$ISSUED" | node -e \
+  'let s="";process.stdin.on("data",c=>s+=c).on("end",()=>process.stdout.write(JSON.parse(s).token))')
+JTI=$(TOKEN="$TOKEN" node -e \
+  'const p=process.env.TOKEN.split(".")[1];process.stdout.write(JSON.parse(Buffer.from(p,"base64url")).jti)')
+```
+
+The first protected call succeeds. Revoke the JTI, then retry the identical credential:
+
+```sh
+curl --fail-with-body http://127.0.0.1:3001/get-quote \
+  --header "authorization: Bearer $TOKEN"
+
+curl --fail-with-body http://127.0.0.1:3000/revoke \
+  --header 'content-type: application/json' \
+  --data "{\"jti\":\"$JTI\",\"reason\":\"phase 4 walkthrough\"}"
+
+curl --include http://127.0.0.1:3001/get-quote \
+  --header "authorization: Bearer $TOKEN"
+```
+
+The last response is `401` with `{"error":"credential_denied","reason":"revoked"}`.
+The shell variables contain the bearer credential, so unset them when finished:
+
+```sh
+unset ISSUED TOKEN JTI
+```
+
+Show denial activity from the previous hour, grouped by reason:
+
+```sh
+pnpm report:denials
+```
+
+The report returns `denial_reason`, `denial_count`, `first_occurrence`, and
+`latest_occurrence`, ordered by count and reason. Run the complete Phase 4 gate with
+PostgreSQL healthy:
+
+```sh
+pnpm phase4:verify
+```

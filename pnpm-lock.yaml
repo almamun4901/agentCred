@@ -66,6 +66,9 @@ importers:
         specifier: ^8.16.3
         version: 8.22.0
     devDependencies:
+      '@agent-cred/verifier-sdk':
+        specifier: workspace:*
+        version: link:../verifier-sdk
       '@types/node':
         specifier: ^24.10.1
         version: 24.13.3

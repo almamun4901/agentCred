@@ -22,6 +22,9 @@ function createMemoryRepository(): IssuanceRepository {
     async getIssuance(jti) {
       return rows.get(jti) ?? null;
     },
+    async revokeIssuance() {
+      return null;
+    },
   };
 }
 
@@ -83,6 +86,7 @@ describe("issuer routes", () => {
     ["zero TTL", { ...validBody, ttl: 0 }],
     ["excessive TTL", { ...validBody, ttl: 3601 }],
     ["fractional TTL", { ...validBody, ttl: 1.5 }],
+    ["unknown field", { ...validBody, unexpected: true }],
   ])("returns 400 for %s", async (_name, payload) => {
     const response = await app.inject({ method: "POST", url: "/issue", payload });
     expect(response.statusCode).toBe(400);
@@ -104,6 +108,9 @@ describe("issuer routes", () => {
           throw new Error("database detail that must stay private");
         },
         async getIssuance() {
+          return null;
+        },
+        async revokeIssuance() {
           return null;
         },
       },
