@@ -19,7 +19,7 @@ alternatives, and consequences are recorded in [DECISIONS.md](./DECISIONS.md).
 | Phase 6 — Rate Limiting | Complete | Atomic Redis enforcement, rotation-resistant demo, and audit evidence passed |
 | Phase 7 — Load Test | Complete | Three-path middleware benchmark captured latency and throughput evidence |
 | Phase 8 — Dockerization | Complete | Clean-volume Compose demo, hardened images, key isolation, and full regression gate passed |
-| Phase 9 — CI | Not started | Add automated lint, test, and build gates |
+| Phase 9 — CI | In progress | Local lint and full Phase 8 CI-equivalent gate pass; remote fail/pass and branch-protection proof remain |
 | Phase 10 — Terraform | Not started | Provision the documented AWS architecture |
 | Phase 11 — CD | Not started | Connect verified images to AWS deployment |
 | Phase 12 — README + Framing | Not started | Publish evidence, tradeoffs, and demo narrative |
@@ -566,12 +566,22 @@ not as a standalone feature.
 
 ---
 
-### Phase 9 — CI (GitHub Actions) (2h)
-- `.github/workflows/ci.yml`: on push/PR — install, lint, run unit + integration tests, build Docker images (no push).
+### Phase 9 — CI (GitHub Actions) (2h) — In progress 2026-07-21
+
+- [x] Add a least-privilege, concurrency-canceling `CI` workflow for every push and
+  pull request with immutable action pins, Node.js 22, pnpm 10.30.1, frozen installs,
+  a 45-minute timeout, and unconditional Compose cleanup.
+- [x] Add a repository-wide ESLint flat configuration and root `pnpm lint` command.
+- [x] Start PostgreSQL and Redis, lint, and run the full Phase 8 verification chain,
+  including all application image builds without publishing them.
+- [ ] Record a deliberately failing pull-request revision followed by a passing fix.
+- [ ] Require the `CI` check on `main` with strict checking and administrator
+  enforcement.
 
 **Testing after this task:**
-- Open a PR with a deliberately broken test → confirm CI fails.
-- Fix it → confirm CI passes and blocks merge appropriately if branch protection is on.
+- [x] Local frozen install, lint, and complete Phase 8 gate pass.
+- [ ] Open a PR with a deliberately broken test → confirm CI fails.
+- [ ] Fix it → confirm CI passes and blocks merge through branch protection.
 
 ---
 

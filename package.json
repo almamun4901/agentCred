@@ -13,6 +13,7 @@
     "demo-agents/*"
   ],
   "scripts": {
+    "lint": "eslint .",
     "db:up": "docker compose up -d --wait postgres",
     "db:down": "docker compose down",
     "db:reset": "docker compose down -v && docker compose up -d --wait postgres",
@@ -47,5 +48,11 @@
     "phase6:verify": "pnpm db:migrate && pnpm phase5:verify && pnpm --filter @agent-cred/verifier-sdk test:rate-limit:integration",
     "phase7:verify": "pnpm phase6:verify && pnpm phase7:benchmark:smoke",
     "phase8:verify": "pnpm phase7:verify && pnpm phase8:verify:containers"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.7.0",
+    "globals": "^17.7.0",
+    "typescript-eslint": "^8.65.0"
   }
 }

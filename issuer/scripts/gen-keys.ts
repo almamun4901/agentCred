@@ -35,6 +35,7 @@ async function main(): Promise<void> {
     if (error instanceof Error && "code" in error && error.code === "EEXIST") {
       throw new Error(
         `Signing keys already exist in ${keysDirectory}. Use --force to replace them.`,
+        { cause: error },
       );
     }
     throw error;

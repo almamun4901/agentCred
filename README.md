@@ -1,5 +1,7 @@
 # AgentCred
 
+[![CI](https://github.com/almamun4901/agentCred/actions/workflows/ci.yml/badge.svg)](https://github.com/almamun4901/agentCred/actions/workflows/ci.yml)
+
 Monorepo scaffold for a scoped credential issuer and verifier for agent-to-agent calls.
 
 See [PROJECT_PLAN.md](./PROJECT_PLAN.md) for the complete project plan and current
@@ -140,8 +142,8 @@ Run the complete local Phase 3 gate with PostgreSQL healthy:
 pnpm phase3:verify
 ```
 
-CI remains deferred to Phase 9; this command and the manual walkthrough are the Phase
-3 completion evidence.
+The CI gate reruns this regression chain on every push and pull request as part of the
+complete Phase 8 verification described below.
 
 ### Audit availability tradeoff
 
@@ -344,5 +346,20 @@ containerized demo, audit evidence, non-root execution, private-key isolation, i
 contents, health, and key persistence before removing only its test-scoped volumes:
 
 ```sh
+pnpm phase8:verify
+```
+
+## Phase 9: continuous integration
+
+GitHub Actions runs one required `CI` job on every push and pull request. The job uses
+Node.js 22 and pnpm 10.30.1, installs from the frozen lockfile, starts PostgreSQL and
+Redis, runs `pnpm lint`, and then runs the complete Phase 8 gate above. The gate builds
+all application images for verification but does not publish them.
+
+The equivalent local checks are:
+
+```sh
+pnpm services:up
+pnpm lint
 pnpm phase8:verify
 ```

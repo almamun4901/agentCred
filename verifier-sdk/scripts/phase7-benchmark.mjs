@@ -267,7 +267,7 @@ async function main() {
   const principal = `phase7-benchmark-${randomUUID()}`;
   const context = { principal, audience, requestedAction };
   const scenarios = new Map();
-  let primaryError;
+  let cleanupError;
 
   try {
     const postgresVersionResult = await pool.query("SHOW server_version");
@@ -362,9 +362,6 @@ async function main() {
     console.log("PHASE7_JSON_END");
     console.log("");
     console.log(markdownReport(result));
-  } catch (error) {
-    primaryError = error;
-    throw error;
   } finally {
     const cleanupErrors = [];
     for (const scenario of scenarios.values()) {
@@ -392,9 +389,15 @@ async function main() {
     } catch (error) {
       cleanupErrors.push(error);
     }
-    if (primaryError === undefined && cleanupErrors.length > 0) {
-      throw new AggregateError(cleanupErrors, "Phase 7 benchmark cleanup failed");
+    if (cleanupErrors.length > 0) {
+      cleanupError = new AggregateError(
+        cleanupErrors,
+        "Phase 7 benchmark cleanup failed",
+      );
     }
+  }
+  if (cleanupError !== undefined) {
+    throw cleanupError;
   }
 }
 
