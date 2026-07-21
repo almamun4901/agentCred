@@ -20,9 +20,9 @@ alternatives, and consequences are recorded in [DECISIONS.md](./DECISIONS.md).
 | Phase 7 — Load Test | Complete | Three-path middleware benchmark captured latency and throughput evidence |
 | Phase 8 — Dockerization | Complete | Clean-volume Compose demo, hardened images, key isolation, and full regression gate passed |
 | Phase 9 — CI | Complete | Required strict CI gate passed after recorded red/green PR proof |
-| Phase 10 — Terraform | Not started | Provision the documented AWS architecture |
-| Phase 11 — CD | Not started | Connect verified images to AWS deployment |
-| Phase 12 — README + Framing | Not started | Publish evidence, tradeoffs, and demo narrative |
+| Phase 10 — Terraform | Not started | Intentionally deferred until AWS work resumes |
+| Phase 11 — CD | Not started | Intentionally deferred with Phase 10 |
+| Phase 12 — README + Framing | Complete | Standalone architecture, evidence, tradeoffs, limitations, and demo narrative published |
 
 Status meanings:
 
@@ -620,14 +620,31 @@ not as a standalone feature.
 
 ---
 
-### Phase 12 — README + Framing (2-4h)
-- Explicitly cite NIST AI Agent Standards Initiative, MCP-I, A2A, IETF drafts.
-- Frame as "a minimal working implementation of the credential/scope-verification pattern these emerging standards are converging on."
-- Include: architecture diagram, token schema, the 6 verifier test cases as a table, the Phase 5/6/7 latency numbers, and a "what this doesn't solve" section (honesty signal — e.g., no key rotation, single-issuer trust model only, fixed-window rate limiting allows boundary bursting).
-- Include the consistency/cache-invalidation/stale-reads/performance discussion from Phase 5 and the rate-limiting design tradeoffs from Phase 6 as their own README subsections — these are now a core part of the project's story, not an afterthought.
-- Include a short section on what deploying to AWS with Terraform + CI/CD taught you operationally (IAM/networking debugging is a legitimate story here).
+### Phase 12 — README + Framing (2-4h) — Complete 2026-07-21
 
-**Testing after this task:** Have someone unfamiliar with the project read only the README and correctly explain back to you what problem it solves and how the demo proves it — that's your interview-readiness check.
+- [x] Lead with the agent authorization problem and explicitly distinguish this
+  implementation from protocol compliance.
+- [x] Cite the NIST AI Agent Standards Initiative and identity work, MCP authorization,
+  MCP-I, A2A, and the IETF Agent Authorization Profile draft.
+- [x] Include the implemented architecture and verification flow, JWT schema, six core
+  verifier cases, deterministic demo, and repository map.
+- [x] Publish the Phase 5 stale-read evidence, Phase 6 rate-limit tradeoffs, Phase 7
+  benchmark results, and Phase 8/9 container and CI proof.
+- [x] Include an explicit limitations section covering bearer replay, issuer auth, key
+  rotation, single-issuer trust, delegation, stale revocation reads, fixed-window
+  bursting, audit availability, network perimeter, and deferred AWS deployment.
+- [x] State that AWS/Terraform/CD work is deferred instead of inventing operational
+  lessons before Phases 10 and 11 are executed.
+
+**Verification recorded 2026-07-21:**
+
+- Every local README link resolves, the documented commands and counts match the root
+  scripts and Phase 9 evidence, and the token/decision tables match `API_REFERENCE.md`
+  and verifier source types.
+- The README alone now identifies the trust boundary, describes the deny-then-allow
+  proof, distinguishes measured middleware evidence from production capacity, and
+  names the main limitations without requiring the chronological project plan.
+- Final lint, diff-integrity, and required CI checks pass on the Phase 12 branch.
 
 ## 6. Project Skills (Claude Code)
 
