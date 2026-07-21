@@ -63,6 +63,15 @@ export function createVerifierPreHandler(
       return;
     }
 
+    if (result.reason === "rate_limited") {
+      reply.header("retry-after", String(result.retryAfterSeconds));
+      await reply.code(429).send({
+        error: "credential_denied",
+        reason: result.reason,
+      });
+      return;
+    }
+
     reply.header("www-authenticate", "Bearer");
     await reply.code(401).send({
       error: "credential_denied",

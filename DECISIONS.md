@@ -220,3 +220,27 @@ instead of erasing the original context.
 - **Revisit if:** The revocation set requires incremental or event-driven propagation,
   the stale-allow budget approaches zero, multiple issuer replicas require singleton
   scheduling, or PostgreSQL fallback availability is no longer acceptable.
+
+## ADR-0013: Enforce exact principal/action budgets with an atomic Redis fixed window
+
+- **Date:** 2026-07-21
+- **Status:** Accepted for Phase 6
+- **Context:** A JTI-keyed budget can be bypassed by issuing a new credential, while a
+  limit embedded in a JWT cannot be changed until that credential expires.
+- **Options considered:** Put limits in JWT claims; store policies in PostgreSQL; use
+  fixed, sliding, or token-bucket counters; and key counters by JTI or trusted identity.
+- **Decision:** Store exact policies in PostgreSQL by principal, audience, and scope.
+  A missing policy means unlimited access. After signature, revocation, and exact scope
+  checks, run an atomic Redis Lua fixed-window operation keyed by those three trusted
+  dimensions. Use Redis server time, allow exactly `max_requests`, do not increment
+  denied attempts, expire counters after their window, and fail closed if either the
+  policy lookup or Redis operation fails. Return HTTP 429 with `Retry-After` and audit
+  the distinct `deny_rate_limited` decision.
+- **Tradeoffs:** Token rotation cannot reset a budget and concurrent Agent B replicas
+  share one counter, but fixed windows permit boundary bursts. PostgreSQL policy lookup
+  remains on the limited-request path so changes apply immediately; Phase 7 must measure
+  that cost before a policy cache is justified. Scope is checked before rate limiting
+  so an out-of-scope credential cannot drain another action's legitimate capacity.
+- **Revisit if:** Load evidence justifies a bounded-stale policy cache, fairness needs a
+  sliding window or token bucket, wildcard policy precedence is required, or Redis
+  cluster deployment requires a different script/key strategy.

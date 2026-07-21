@@ -243,8 +243,7 @@ The live default-interval walkthrough on 2026-07-21 produced:
 | Out-of-band sync | final stale allow at 4.923s; first denial at 5.029s after the database write |
 
 The extra 29 ms is within the walkthrough's 100 ms observation polling resolution.
-This is bounded-staleness evidence, not a performance claim. Repeatable PostgreSQL vs.
-Redis p50/p95/p99 and throughput measurements remain Phase 7 work.
+This is bounded-staleness evidence; Phase 7 measures performance separately below.
 
 Configuration defaults are `REDIS_URL=redis://127.0.0.1:6379` and
 `REVOCATION_SYNC_INTERVAL_SECONDS=5`. Revocation keys expire with their JWT, while the
@@ -253,4 +252,66 @@ both backing services healthy:
 
 ```sh
 pnpm phase5:verify
+```
+
+## Phase 6: principal-scoped rate limiting
+
+Phase 6 adds configurable request budgets without placing them in JWTs. PostgreSQL
+stores exact policies by principal, audience, and scope; Redis atomically enforces a
+fixed window shared by every credential for that tuple. Rotating to a new JTI therefore
+does not reset the budget.
+
+Apply the non-destructive schema migration after starting the stateful services:
+
+```sh
+pnpm services:up
+pnpm db:migrate
+```
+
+Agent B evaluates signature and claims, revocation, and exact scope before consuming
+rate capacity. A missing policy means unlimited access. A policy or Redis failure
+fails closed as `503 verification_unavailable`; exceeding a policy returns `429
+rate_limited` with `Retry-After`. Fixed windows are intentionally simple and can allow
+boundary bursts; sliding-window enforcement remains a production evolution.
+
+With the issuer and Agent B running, the repeatable demo installs a local 3/minute
+policy, clears only that demo counter, issues two credentials for the same principal,
+and proves that the fourth alternating-token request is denied:
+
+```sh
+pnpm phase6:demo
+```
+
+Run the complete Phase 6 gate with PostgreSQL and Redis healthy:
+
+```sh
+pnpm phase6:verify
+```
+
+## Phase 7: verifier load test
+
+Phase 7 exercises the Fastify verifier middleware through its in-memory injection
+path, retaining JWT verification and route handling while excluding socket latency and
+PostgreSQL audit writes. Each scenario ran three five-second trials after a two-second
+warm-up. Latency percentiles use the same concurrency of 32; throughput is the best
+median from the 1/8/32/64 concurrency sweep.
+
+| Scenario | p50 (ms) | p95 (ms) | p99 (ms) | Max sustained req/s |
+|---|---:|---:|---:|---:|
+| PostgreSQL revocation | 1.679 | 2.676 | 3.472 | 18,331 |
+| Redis revocation | 0.795 | 1.190 | 2.702 | 46,454 |
+| Redis revocation + PostgreSQL policy + Redis rate limit | 2.152 | 3.297 | 4.258 | 15,268 |
+
+On the recorded Apple M5 Pro local run, Redis cut median revocation latency by 52.7%
+and reached 2.53 times PostgreSQL's peak throughput. The rate-limited path shows the
+cost of retaining an exact PostgreSQL policy read before the Redis counter operation;
+it is evidence to evaluate a future bounded-stale policy cache, not a production
+capacity claim. Full environment metadata and methodology are in
+[PERFORMANCE.md](./PERFORMANCE.md).
+
+With PostgreSQL and Redis healthy, reproduce the benchmark or run its complete gate:
+
+```sh
+pnpm phase7:benchmark
+pnpm phase7:verify
 ```

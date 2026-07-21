@@ -16,8 +16,8 @@ alternatives, and consequences are recorded in [DECISIONS.md](./DECISIONS.md).
 | Phase 3 — Demo Agents | Complete | Deny-then-allow live demo and PostgreSQL audit evidence passed |
 | Phase 4 — Audit + Revocation | Complete | Idempotent revoke API, denial report, and live lifecycle verified |
 | Phase 5 — Revocation Cache | Complete | Redis fast path, safe fallback, and measured 5.029s out-of-band propagation verified |
-| Phase 6 — Rate Limiting | Not started | Policy and Redis implementation remain |
-| Phase 7 — Load Test | Not started | Requires working verifier paths |
+| Phase 6 — Rate Limiting | Complete | Atomic Redis enforcement, rotation-resistant demo, and audit evidence passed |
+| Phase 7 — Load Test | Complete | Three-path middleware benchmark captured latency and throughput evidence |
 | Phase 8 — Dockerization | Not started | Containerize application services |
 | Phase 9 — CI | Not started | Add automated lint, test, and build gates |
 | Phase 10 — Terraform | Not started | Provision the documented AWS architecture |
@@ -422,11 +422,19 @@ Move from binary allow/deny to a request-rate budget enforced per credential,
 scoped by `scope` and `principal` (not just per-`jti`, since a principal issuing
 many short-lived credentials shouldn't be able to bypass a limit by rotating tokens).
 
-- `rate-limiter.ts` in verifier-sdk: sliding-window or fixed-window counter in Redis, keyed by `principal:scope` (e.g., `ratelimit:company-x:read.quote`), incremented on each verification attempt, checked against a configurable limit (e.g., 100 req/min) before the scope check runs.
-- Rate limit config lives alongside scope grants — either as an additional claim in the token (`rate_limit: {window_seconds: 60, max_requests: 100}`) issued by the issuer, or as a policy table (`rate_limit_policies` keyed by `principal` + `scope`) the verifier consults. **Recommendation: policy table**, not a token claim — it lets you change limits without reissuing tokens, which is the more realistic operational story.
-- Add `rate_limit_policies` table to `db/schema.sql`.
-- Extend `verification_log` with a new `decision` value: `deny_rate_limited` (distinct from `deny_scope_exceeded`) so your audit query can separate "wrong permission" from "too many requests" — these are different failure classes with different remediation.
-- Extend Agent A/B demo: fire N rapid requests from Agent A with a low test limit (e.g., 3/min) and show the 4th request getting `429` with `deny_rate_limited`.
+- [x] Add an exact PostgreSQL policy table keyed by principal, audience, and scope,
+  plus a non-destructive migration for existing local volumes.
+- [x] Implement a collision-safe, atomic Redis fixed-window counter using Redis server
+  time, credential-independent keys, bounded expiry, and no over-limit increments.
+- [x] Inject optional rate limiting after signature, revocation, and exact scope checks;
+  fail closed when policy or counter enforcement is unavailable.
+- [x] Map exhausted budgets to `429 rate_limited` with `Retry-After` and persist the
+  distinct `deny_rate_limited` audit decision.
+- [x] Wire Agent B to PostgreSQL policy resolution and shared Redis enforcement.
+- [x] Add a repeatable two-token Agent A demo proving that JTI rotation does not reset
+  a principal's three-request budget.
+- [x] Cover policy resolution, key isolation, malformed Redis responses, ordering,
+  failure behavior, concurrency, middleware, audit, and the demo with automated tests.
 
 **Testing after this task:**
 - Unit test: N requests under the limit → all allowed, counter increments correctly.
@@ -439,21 +447,74 @@ many short-lived credentials shouldn't be able to bypass a limit by rotating tok
 **Discussion points for the README:**
 - Why `principal:scope` and not `jti` — prevents rate-limit evasion via token rotation.
 - Fixed-window vs. sliding-window tradeoffs (fixed window is simpler but allows bursting at window boundaries — worth explicitly naming as a known simplification if you go fixed-window for time).
-- How this composes with revocation: order of checks in the verifier (signature → aud → revocation → rate limit → scope), and why that order matters (cheapest/most-authoritative checks first).
+- How this composes with revocation: order of checks in the verifier (signature → aud
+  → revocation → scope → rate limit), and why unauthorized requests must not consume
+  a legitimate principal/action budget.
+
+**Verification recorded 2026-07-21:**
+
+- The aggregate `pnpm phase6:verify` gate passed all workspace unit tests,
+  PostgreSQL/Redis integration tests, typechecks, production builds, the denial report,
+  Redis health check, Compose validation, and the idempotent schema migration.
+- Ninety-six unit tests and fourteen integration cases pass with the completed demo
+  test included.
+- Twelve concurrent attempts against a three-request policy produced exactly three
+  allows and nine denials; the stored Redis count remained exactly three.
+- Agent B integration alternated two different JTIs for one principal, allowed the
+  first three calls, returned `429` with `Retry-After` on the fourth, and stored
+  `deny_rate_limited` / `rate_limited` in PostgreSQL.
+- The implementation intentionally checks exact scope before consuming capacity,
+  correcting the earlier outline so an out-of-scope credential cannot drain a
+  legitimate action budget.
+
+**Known limitations accepted for Phase 6:**
+
+- Fixed windows allow boundary bursting; sliding windows or token buckets remain a
+  production evolution.
+- Exact PostgreSQL policy resolution remains on each rate-limited request path. Phase 7
+  measures its cost before adding a bounded-stale policy cache.
+- Policies have no wildcard precedence or management API; a missing exact policy means
+  unlimited access, and local demo policy setup is intentionally operator-driven.
 
 ---
 
-### Phase 7 — Simple Load Test (2-3h)
+### Phase 7 — Simple Load Test (2-3h) — Complete 2026-07-21
 
 Added specifically to produce real numbers for the Phase 5/6 performance discussion,
 not as a standalone feature.
 
-- Use `autocannon` or a small custom script to hit the verifier middleware directly (bypassing network hops to isolate the check logic) with concurrent requests.
-- Run three scenarios: (1) revocation check via Postgres only (pre-Phase-5 code path, kept behind a flag for comparison), (2) revocation check via Redis, (3) revocation + rate-limit check via Redis.
-- Record p50/p95/p99 latency and max sustained throughput for each.
+- [x] Use a custom script to hit the verifier middleware directly through Fastify
+  injection, bypassing socket and network hops while retaining common JWT and route
+  work.
+- [x] Run three benchmark-only scenarios: direct PostgreSQL revocation, Redis
+  revocation with an unused PostgreSQL fallback, and Redis revocation plus exact
+  PostgreSQL policy resolution and atomic Redis enforcement.
+- [x] Record median-of-three p50/p95/p99 latency at concurrency 32 and maximum median
+  throughput across a 1/8/32/64 concurrency sweep.
 
 **Testing after this task:**
-- Numbers are captured in a small table/chart for the README — this is the evidence behind "moved to Redis for performance," not just an assertion.
+- [x] Numbers are captured in `PERFORMANCE.md` and the README as evidence behind the
+  Redis performance discussion.
+
+**Verification recorded 2026-07-21:**
+
+- The default three-trial run measured PostgreSQL revocation at 1.679 ms p50 and
+  18,331 req/s, Redis revocation at 0.795 ms and 46,454 req/s, and Redis revocation
+  plus policy/rate limiting at 2.152 ms and 15,268 req/s.
+- Backend operation counters proved the Redis scenarios performed no PostgreSQL
+  revocation fallback, while the rate-limited scenario exercised both PostgreSQL
+  policy resolution and the Redis script on every request.
+- The Phase 6 regression gate passed 107 unit tests, 14 integration cases, every
+  workspace typecheck and build, the denial report, Redis readiness, and the
+  rate-limit concurrency test. The real-backend Phase 7 smoke run also passed.
+
+**Known limitations accepted for Phase 7:**
+
+- Results describe local in-process middleware behavior on one Apple M5 Pro, not
+  networked or production capacity.
+- The benchmark excludes audit writes to isolate authorization-path cost and supplies
+  a benchmark-local freshness value after each real Redis `MGET` to avoid mutating the
+  issuer's global freshness lease.
 
 ---
 

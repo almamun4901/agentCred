@@ -1,4 +1,5 @@
 import { errors, jwtVerify, type JWTPayload } from "jose";
+import type { CheckRateLimit } from "./rate-limiter.js";
 
 export const denialReasons = [
   "invalid_signature",
@@ -8,6 +9,7 @@ export const denialReasons = [
   "invalid_claims",
   "revoked",
   "scope_exceeded",
+  "rate_limited",
   "verification_unavailable",
 ] as const;
 
@@ -27,7 +29,8 @@ export interface VerifiedCredentialClaims {
 
 export type VerificationResult =
   | { decision: "allow"; claims: VerifiedCredentialClaims }
-  | { decision: "deny"; reason: DenialReason };
+  | { decision: "deny"; reason: Exclude<DenialReason, "rate_limited"> }
+  | { decision: "deny"; reason: "rate_limited"; retryAfterSeconds: number };
 
 export type IsRevoked = (jti: string) => Promise<boolean>;
 
@@ -36,7 +39,7 @@ export interface VerificationEvent {
   readonly principal: string | null;
   readonly requestedAction: string;
   readonly audience: string;
-  readonly decision: "allow" | "deny";
+  readonly decision: "allow" | "deny" | "deny_rate_limited";
   readonly denialReason: DenialReason | null;
 }
 
@@ -50,6 +53,7 @@ export interface CredentialVerifierOptions {
   publicKey: CryptoKey;
   issuer: string;
   isRevoked: IsRevoked;
+  checkRateLimit?: CheckRateLimit;
   onDecision?: DecisionObserver;
   onDecisionError?: DecisionObserverErrorHandler;
 }
@@ -105,7 +109,9 @@ function toVerifiedClaims(payload: JWTPayload): VerifiedCredentialClaims | null 
   };
 }
 
-function mapJoseError(error: unknown): DenialReason {
+function mapJoseError(
+  error: unknown,
+): Exclude<DenialReason, "rate_limited"> {
   if (error instanceof errors.JWTExpired) {
     return "expired";
   }
@@ -163,7 +169,10 @@ export function createCredentialVerifier(
         principal: claims?.principal ?? null,
         requestedAction,
         audience: expectedAudience,
-        decision: result.decision,
+        decision:
+          result.decision === "deny" && result.reason === "rate_limited"
+            ? "deny_rate_limited"
+            : result.decision,
         denialReason: result.decision === "deny" ? result.reason : null,
       });
       await observeDecision(options, event);
@@ -214,6 +223,31 @@ export function createCredentialVerifier(
 
     if (!claims.scope.includes(requestedAction)) {
       return finalize({ decision: "deny", reason: "scope_exceeded" }, claims);
+    }
+
+    if (options.checkRateLimit !== undefined) {
+      try {
+        const rateLimit = await options.checkRateLimit({
+          principal: claims.principal,
+          audience: expectedAudience,
+          requestedAction,
+        });
+        if (rateLimit.limited) {
+          return finalize(
+            {
+              decision: "deny",
+              reason: "rate_limited",
+              retryAfterSeconds: rateLimit.retryAfterSeconds,
+            },
+            claims,
+          );
+        }
+      } catch {
+        return finalize(
+          { decision: "deny", reason: "verification_unavailable" },
+          claims,
+        );
+      }
     }
 
     return finalize({ decision: "allow", claims }, claims);

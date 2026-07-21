@@ -28,3 +28,15 @@ export {
   type RevocationCacheReader,
   type RevocationCacheWriter,
 } from "./revocation-cache.js";
+export {
+  RATE_LIMIT_KEY_PREFIX,
+  createPostgresRateLimitPolicyResolver,
+  createRedisRateLimiter,
+  rateLimitKey,
+  type CheckRateLimit,
+  type GetRateLimitPolicy,
+  type RateLimitContext,
+  type RateLimitPolicy,
+  type RateLimitRedisClient,
+  type RateLimitResult,
+} from "./rate-limiter.js";

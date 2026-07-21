@@ -6,6 +6,7 @@ import {
   type DecisionObserverErrorHandler,
   type IsRevoked,
 } from "../src/verify.js";
+import type { CheckRateLimit } from "../src/rate-limiter.js";
 
 const nowSeconds = Math.floor(Date.now() / 1_000);
 
@@ -133,6 +134,74 @@ describe("createCredentialVerifier", () => {
     await expect(createVerifier()(token, "read:weather", "agent-b")).resolves.toEqual({
       decision: "deny",
       reason: "scope_exceeded",
+    });
+  });
+
+  it("rate limits an authorized request and records a distinct audit decision", async () => {
+    const checkRateLimit = vi.fn<CheckRateLimit>().mockResolvedValue({
+      limited: true,
+      policy: { maxRequests: 3, windowSeconds: 60 },
+      remaining: 0,
+      resetAtSeconds: nowSeconds + 20,
+      retryAfterSeconds: 20,
+    });
+    const onDecision = vi.fn<DecisionObserver>();
+    const token = await signToken(privateKey);
+    const verifier = createCredentialVerifier({
+      publicKey,
+      issuer: "test-issuer",
+      isRevoked,
+      checkRateLimit,
+      onDecision,
+    });
+
+    await expect(verifier(token, "read:weather", "agent-b")).resolves.toEqual({
+      decision: "deny",
+      reason: "rate_limited",
+      retryAfterSeconds: 20,
+    });
+    expect(checkRateLimit).toHaveBeenCalledWith({
+      principal: "company-x",
+      audience: "agent-b",
+      requestedAction: "read:weather",
+    });
+    expect(onDecision).toHaveBeenCalledWith(
+      expect.objectContaining({
+        decision: "deny_rate_limited",
+        denialReason: "rate_limited",
+      }),
+    );
+  });
+
+  it("does not consume rate capacity for revoked or out-of-scope credentials", async () => {
+    const checkRateLimit = vi.fn<CheckRateLimit>();
+    const verifier = createCredentialVerifier({
+      publicKey,
+      issuer: "test-issuer",
+      isRevoked,
+      checkRateLimit,
+    });
+    const outOfScope = await signToken(privateKey, { scope: ["read:other"] });
+
+    await verifier(outOfScope, "read:weather", "agent-b");
+    isRevoked.mockResolvedValue(true);
+    await verifier(await signToken(privateKey), "read:weather", "agent-b");
+
+    expect(checkRateLimit).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when rate-limit enforcement is unavailable", async () => {
+    const token = await signToken(privateKey);
+    const verifier = createCredentialVerifier({
+      publicKey,
+      issuer: "test-issuer",
+      isRevoked,
+      checkRateLimit: vi.fn().mockRejectedValue(new Error("redis unavailable")),
+    });
+
+    await expect(verifier(token, "read:weather", "agent-b")).resolves.toEqual({
+      decision: "deny",
+      reason: "verification_unavailable",
     });
   });
 

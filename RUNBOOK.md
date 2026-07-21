@@ -33,3 +33,28 @@ docker compose exec -T redis redis-cli TTL agentcred:revocations:fresh
 ```
 
 Do not paste bearer credentials into Redis commands or logs.
+
+## Rate-limit operations
+
+Apply the Phase 6 migration without resetting the database:
+
+```sh
+pnpm db:migrate
+```
+
+Policies are exact matches on `principal`, `audience`, and `scope`. There are no
+wildcards. Insert or update policies in PostgreSQL; a missing row means the request is
+not rate limited. Agent B reads the policy before executing one atomic Redis fixed-window
+operation.
+
+- **Protected requests return `429 rate_limited`:** inspect the matching policy and
+  the response's `Retry-After` header. The counter expires just after its window.
+- **Protected requests return `503 verification_unavailable`:** check both PostgreSQL
+  and Redis. Rate-limit state fails closed rather than bypassing policy.
+- **A new token remains limited:** expected behavior. Counters are shared by principal,
+  audience, and requested action rather than JTI.
+- **Policy update behavior:** a new maximum applies on the next request. Changing the
+  window length starts a new counter window.
+
+Run `pnpm phase6:demo` only against the local demo stack. Its setup updates the dedicated
+`phase6-demo` policy and deletes only that principal's namespaced counter.

@@ -7,7 +7,9 @@ import pg from "pg";
 import { createClient } from "redis";
 import {
   createCredentialVerifier,
+  createPostgresRateLimitPolicyResolver,
   createPostgresRevocationChecker,
+  createRedisRateLimiter,
   createRedisRevocationChecker,
   createVerifierPreHandler,
   type VerificationEvent,
@@ -108,6 +110,10 @@ async function start(): Promise<void> {
       isRevoked: createRedisRevocationChecker({
         redis,
         fallback: createPostgresRevocationChecker(pool),
+      }),
+      checkRateLimit: createRedisRateLimiter({
+        redis,
+        getPolicy: createPostgresRateLimitPolicyResolver(pool),
       }),
       onDecision,
       onDecisionError(error: unknown, event: VerificationEvent) {

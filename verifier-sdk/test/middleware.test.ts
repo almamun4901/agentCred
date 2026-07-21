@@ -111,4 +111,28 @@ describe("createVerifierPreHandler", () => {
     expect(response.body).not.toContain(token);
     expect(setup.handler).not.toHaveBeenCalled();
   });
+
+  it("maps a rate limit denial to 429 with a retry delay", async () => {
+    const setup = buildProtectedApp({
+      decision: "deny",
+      reason: "rate_limited",
+      retryAfterSeconds: 17,
+    });
+    apps.push(setup.app);
+
+    const response = await setup.app.inject({
+      method: "GET",
+      url: "/protected",
+      headers: { authorization: "Bearer safe-token" },
+    });
+
+    expect(response.statusCode).toBe(429);
+    expect(response.headers["retry-after"]).toBe("17");
+    expect(response.headers["www-authenticate"]).toBeUndefined();
+    expect(response.json()).toEqual({
+      error: "credential_denied",
+      reason: "rate_limited",
+    });
+    expect(setup.handler).not.toHaveBeenCalled();
+  });
 });

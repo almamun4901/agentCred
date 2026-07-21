@@ -198,10 +198,12 @@ internal error:
 | `invalid_claims` | required claims or the JWT type have the wrong shape |
 | `revoked` | the token's `jti` exists in the revocation source |
 | `scope_exceeded` | the requested action is not an exact member of `scope` |
+| `rate_limited` | the valid credential's principal/action budget is exhausted |
 | `verification_unavailable` | the revocation source could not produce a decision |
 
-Revocation is checked before scope. A revocation-source failure denies the request;
-the verifier does not fail open.
+The order is signature/claims, revocation, scope, then rate limit. Invalid, revoked,
+and out-of-scope attempts do not consume legitimate request capacity. A revocation,
+policy, or counter-store failure denies the request; the verifier does not fail open.
 
 ### Fastify pre-handler
 
@@ -218,8 +220,9 @@ app.get("/weather", {
 ```
 
 The middleware accepts only an `Authorization: Bearer <token>` header. It returns
-`401` for a missing or unusable credential, `403` for insufficient scope, and `503`
-when revocation status cannot be checked. Error bodies use
+`401` for a missing or unusable credential, `403` for insufficient scope, `429` with
+`Retry-After` for an exhausted budget, and `503` when verification dependencies cannot
+produce a decision. Error bodies use
 `{ "error": "credential_denied", "reason": "..." }` and never include the token.
 
 The PostgreSQL and Redis adapters own no connection lifecycle; consuming services
@@ -254,7 +257,8 @@ trade response latency for tighter correlation with durable audit evidence.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `DATABASE_URL` | local AgentCred PostgreSQL URL | Revocation reads, readiness, and audit writes |
+| `DATABASE_URL` | local AgentCred PostgreSQL URL | Rate-limit policy reads, readiness, and audit writes |
+| `REDIS_URL` | `redis://127.0.0.1:6379` | Revocation cache and shared rate-limit counters |
 | `VERIFYING_PUBLIC_KEY_PATH` | `../../issuer/keys/public.pem` | Issuer ES256 public key |
 | `ISSUER_ID` | `agentcred-issuer` | Exact trusted JWT issuer |
 | `AGENT_B_AUDIENCE` | `agent-b` | Exact accepted JWT audience |
@@ -282,4 +286,9 @@ written synchronously to `verification_log`; Agent B retries once after 100 ms a
 logs a structured audit-gap error if both inserts fail without changing the HTTP
 authorization result.
 
-Last verified against code: 2026-07-20.
+Rate-limit policies are managed outside the credential API in the
+`rate_limit_policies` table. The exact key is principal, audience, and scope; a missing
+policy means unlimited access. Agent B returns `429 rate_limited` when the policy is
+exhausted and records audit decision `deny_rate_limited`.
+
+Last verified against code: 2026-07-21.

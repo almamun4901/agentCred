@@ -18,6 +18,7 @@
     "db:reset": "docker compose down -v && docker compose up -d --wait postgres",
     "db:logs": "docker compose logs -f postgres",
     "db:verify": "docker compose exec -T postgres psql -U agentcred -d agentcred -c '\\dt'",
+    "db:migrate": "docker compose exec -T postgres psql -v ON_ERROR_STOP=1 -U agentcred -d agentcred -f - < db/migrations/001_phase6_rate_limit_policies.sql",
     "redis:up": "docker compose up -d --wait redis",
     "redis:logs": "docker compose logs -f redis",
     "redis:verify": "docker compose exec -T redis redis-cli ping",
@@ -31,12 +32,18 @@
     "verifier:test:integration": "pnpm --filter @agent-cred/verifier-sdk test:integration",
     "agent-b:dev": "pnpm --filter @agent-cred/verifier-sdk build && pnpm --filter @agent-cred/agent-b dev",
     "agent-a:demo": "pnpm --filter @agent-cred/agent-a demo",
+    "phase6:demo:setup": "docker compose exec -T postgres psql -v ON_ERROR_STOP=1 -U agentcred -d agentcred -c \"INSERT INTO rate_limit_policies (principal, audience, scope, window_seconds, max_requests) VALUES ('phase6-demo', 'agent-b', 'read:quote:basic', 60, 3) ON CONFLICT (principal, audience, scope) DO UPDATE SET window_seconds = EXCLUDED.window_seconds, max_requests = EXCLUDED.max_requests, updated_at = CURRENT_TIMESTAMP\" && docker compose exec -T redis redis-cli DEL agentcred:ratelimit:v1:cGhhc2U2LWRlbW8:YWdlbnQtYg:cmVhZDpxdW90ZTpiYXNpYw",
+    "phase6:demo": "pnpm phase6:demo:setup && pnpm --filter @agent-cred/agent-a demo:rate-limit",
+    "phase7:benchmark": "pnpm --filter @agent-cred/verifier-sdk build && node verifier-sdk/scripts/phase7-benchmark.mjs",
+    "phase7:benchmark:smoke": "pnpm phase7:benchmark --duration 0.05 --warmup 0.05 --concurrency 2 --sweep 1,2 --trials 1",
     "phase3:test:unit": "pnpm issuer:test && pnpm verifier:test && pnpm --filter @agent-cred/verifier-sdk build && pnpm --filter @agent-cred/agent-b test && pnpm --filter @agent-cred/agent-a test",
     "phase3:test:integration": "pnpm issuer:test:integration && pnpm verifier:test:integration && pnpm --filter @agent-cred/agent-b test:integration",
     "phase3:typecheck": "pnpm --filter @agent-cred/verifier-sdk typecheck && pnpm --filter @agent-cred/issuer typecheck && pnpm --filter @agent-cred/agent-b typecheck && pnpm --filter @agent-cred/agent-a typecheck",
     "phase3:build": "pnpm --filter @agent-cred/verifier-sdk build && pnpm --filter @agent-cred/issuer build && pnpm --filter @agent-cred/agent-b build && pnpm --filter @agent-cred/agent-a build",
     "phase3:verify": "pnpm phase3:test:unit && pnpm phase3:test:integration && pnpm phase3:typecheck && pnpm phase3:build",
     "phase4:verify": "pnpm phase3:verify && pnpm report:denials",
-    "phase5:verify": "pnpm phase4:verify && pnpm redis:verify && docker compose config -q"
+    "phase5:verify": "pnpm phase4:verify && pnpm redis:verify && docker compose config -q",
+    "phase6:verify": "pnpm db:migrate && pnpm phase5:verify && pnpm --filter @agent-cred/verifier-sdk test:rate-limit:integration",
+    "phase7:verify": "pnpm phase6:verify && pnpm phase7:benchmark:smoke"
   }
 }

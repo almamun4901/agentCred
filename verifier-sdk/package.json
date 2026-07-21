@@ -15,12 +15,14 @@
     "build": "tsc -p tsconfig.json",
     "test": "vitest run --exclude '**/*.integration.test.ts'",
     "test:integration": "vitest run test/revocation.integration.test.ts",
+    "test:rate-limit:integration": "vitest run test/rate-limiter.integration.test.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
     "fastify": "^5.6.2",
     "jose": "^6.1.2",
-    "pg": "^8.16.3"
+    "pg": "^8.16.3",
+    "redis": "^6.1.0"
   },
   "devDependencies": {
     "@types/node": "^24.10.1",
