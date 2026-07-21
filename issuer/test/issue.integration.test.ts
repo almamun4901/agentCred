@@ -26,6 +26,7 @@ describe("issuer PostgreSQL integration", () => {
     publicKey = keys.publicKey;
     app = buildServer({
       repository: createIssuanceRepository(pool),
+      publishRevocation: async () => undefined,
       signCredential: createCredentialSigner({
         issuer: "integration-test-issuer",
         privateKey: keys.privateKey,

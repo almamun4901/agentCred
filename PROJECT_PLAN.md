@@ -2,7 +2,7 @@
 
 ## Project Progress
 
-Last updated: **2026-07-18**
+Last updated: **2026-07-21**
 
 This file is the source of truth for implementation progress. Task checkboxes are
 updated only after the work has been implemented and verified. Architecture choices,
@@ -15,7 +15,7 @@ alternatives, and consequences are recorded in [DECISIONS.md](./DECISIONS.md).
 | Phase 2 — Verifier SDK | Complete | Strict ES256 verification, PostgreSQL revocation checks, Fastify middleware, and automated verification passed |
 | Phase 3 — Demo Agents | Complete | Deny-then-allow live demo and PostgreSQL audit evidence passed |
 | Phase 4 — Audit + Revocation | Complete | Idempotent revoke API, denial report, and live lifecycle verified |
-| Phase 5 — Revocation Cache | Not started | Redis intentionally deferred |
+| Phase 5 — Revocation Cache | Complete | Redis fast path, safe fallback, and measured 5.029s out-of-band propagation verified |
 | Phase 6 — Rate Limiting | Not started | Policy and Redis implementation remain |
 | Phase 7 — Load Test | Not started | Requires working verifier paths |
 | Phase 8 — Dockerization | Not started | Containerize application services |
@@ -366,11 +366,17 @@ agent-cred/
 Move revocation checks off the request-critical-path Postgres lookup and onto Redis,
 with periodic sync back to the issuer as source of truth.
 
-- Add Redis to `docker-compose.yml`.
-- `revocation-cache.ts` in verifier-sdk: `isRevoked(jti)` checks Redis first (`SISMEMBER revoked_jtis <jti>` or a key-per-jti with TTL matching token TTL); on cache miss/Redis-down, falls back to Postgres (fail-safe, not fail-open — a cache outage should not silently allow revoked tokens through).
-- `sync-revocations.ts` in issuer: a periodic job (simple `setInterval` or cron-style, every N seconds) that reads new rows from `revocations` in Postgres and pushes them into Redis. This models the "periodic sync from source of truth" pattern from the diagram.
-- Update `POST /revoke` to also immediately push to Redis (write-through), so the demo can show *both* the fast path (immediate write-through) and the slow path (a revocation that happened directly in Postgres, only picked up on the next sync interval) — this is the core teaching moment.
-- Add a `sync_interval_seconds` config value and log every sync run (rows synced, duration).
+- [x] Add persistent, loopback-only Redis with health checks to Docker Compose.
+- [x] Add expiring per-JTI cache entries and a freshness-gated Redis checker with
+  PostgreSQL fallback.
+- [x] Add a non-overlapping full synchronizer with a configurable five-second interval,
+  initial startup sync, freshness lease, and structured run metrics.
+- [x] Write through successful and idempotent API revocations; return a retryable,
+  sanitized `503` if propagation fails after PostgreSQL commits.
+- [x] Configure Agent B with Redis readiness, PostgreSQL fallback, and clean client
+  shutdown without changing the verifier contract.
+- [x] Cover cache, synchronization, write-through, TTL, staleness, and outage behavior
+  with unit and PostgreSQL/Redis integration tests.
 
 **Testing after this task:**
 - Unit test: `isRevoked` hits Redis, returns true/false correctly for known keys.
@@ -384,6 +390,29 @@ with periodic sync back to the issuer as source of truth.
 - *Cache invalidation:* explicit invalidation (write-through on revoke) vs. TTL-based expiry of cache entries themselves (should a Redis key ever expire before its underlying JWT does?).
 - *Stale reads:* the demonstrated window above, and what class of risk it represents (a revoked-but-still-cached-as-valid token being allowed for up to `sync_interval_seconds`).
 - *Performance:* compare p50/p99 latency of `isRevoked` via Redis vs. direct Postgres lookup under a simple load test (see Phase 7 below) — this is your actual "why we did this" evidence, not just an assumption.
+
+**Verification recorded 2026-07-21:**
+
+- The aggregate `pnpm phase5:verify` gate passed: 84 unit tests, 12 integration
+  cases, all workspace typechecks and production builds, the denial report, Redis
+  `PONG`, and Compose validation.
+- Redis and PostgreSQL integration tests proved immediate API write-through, an
+  authoritative healthy cache miss, periodic convergence, credential-bounded TTLs,
+  and PostgreSQL fallback during Redis failure.
+- The default five-second live walkthrough returned `200` before API revocation and
+  `401` immediately after it. An out-of-band database revocation produced a final
+  stale allow after 4.923 seconds and the first denial after 5.029 seconds, including
+  100 ms observation polling resolution.
+- Performance benchmarking remains explicitly deferred to Phase 7; Phase 5 records
+  consistency behavior without claiming unmeasured latency or throughput gains.
+
+**Known limitations accepted for Phase 5:**
+
+- A healthy cache may allow an out-of-band revoked credential until the next sync.
+- Full active-set synchronization is suitable for this demo, not an unbounded table;
+  incremental or event-driven propagation is the production evolution.
+- Synchronization runs inside one issuer process without leader election. Redis and
+  PostgreSQL remain local and unauthenticated at the service layer.
 
 ---
 

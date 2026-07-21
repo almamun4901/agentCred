@@ -44,6 +44,7 @@ function createMemoryRepository(): IssuanceRepository {
         jti,
         revoked_at: new Date("2026-07-20T12:01:00.000Z"),
         reason,
+        expires_at: issuances.get(jti)!.expires_at,
       };
       revocations.set(jti, revocation);
       return revocation;
@@ -53,11 +54,14 @@ function createMemoryRepository(): IssuanceRepository {
 
 describe("POST /revoke", () => {
   let app: ReturnType<typeof buildServer>;
+  let publishRevocation: ReturnType<typeof vi.fn>;
 
   beforeEach(async () => {
     const { privateKey } = await generateKeyPair("ES256");
+    publishRevocation = vi.fn(async () => undefined);
     app = buildServer({
       repository: createMemoryRepository(),
+      publishRevocation,
       signCredential: createCredentialSigner({ issuer: "test-issuer", privateKey }),
     });
   });
@@ -79,6 +83,13 @@ describe("POST /revoke", () => {
       revoked_at: "2026-07-20T12:01:00.000Z",
       reason: "operator requested",
     });
+    expect(publishRevocation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        jti: "known-jti",
+        expires_at: new Date("2026-07-20T12:05:00.000Z"),
+      }),
+    );
+    expect(response.body).not.toContain("expires_at");
   });
 
   it("uses null when the optional reason is omitted", async () => {
@@ -129,6 +140,29 @@ describe("POST /revoke", () => {
     });
     expect(response.statusCode).toBe(404);
     expect(response.json()).toEqual({ error: "issuance_not_found" });
+    expect(publishRevocation).not.toHaveBeenCalled();
+  });
+
+  it("returns 503 after durable revocation when cache propagation fails, then retries", async () => {
+    publishRevocation.mockRejectedValueOnce(new Error("private redis detail"));
+    const failed = await app.inject({
+      method: "POST",
+      url: "/revoke",
+      payload: { jti: "known-jti", reason: "durable reason" },
+    });
+    const retry = await app.inject({
+      method: "POST",
+      url: "/revoke",
+      payload: { jti: "known-jti", reason: "replacement reason" },
+    });
+
+    expect(failed.statusCode).toBe(503);
+    expect(failed.json()).toEqual({ error: "revocation_propagation_unavailable" });
+    expect(failed.body).not.toContain("known-jti");
+    expect(failed.body).not.toContain("private redis detail");
+    expect(retry.statusCode).toBe(200);
+    expect(retry.json()).toMatchObject({ jti: "known-jti", reason: "durable reason" });
+    expect(publishRevocation).toHaveBeenCalledTimes(2);
   });
 
   it("sanitizes repository failures without returning request data", async () => {
@@ -140,6 +174,7 @@ describe("POST /revoke", () => {
     );
     app = buildServer({
       repository,
+      publishRevocation: async () => undefined,
       signCredential: createCredentialSigner({ issuer: "test-issuer", privateKey }),
     });
 

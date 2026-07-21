@@ -9,16 +9,17 @@
     "start": "node dist/server.js",
     "keys:generate": "tsx scripts/gen-keys.ts",
     "test": "vitest run --exclude '**/*.integration.test.ts'",
-    "test:integration": "pnpm --filter @agent-cred/verifier-sdk build && vitest run test/issue.integration.test.ts",
+    "test:integration": "pnpm --filter @agent-cred/verifier-sdk build && vitest run test/issue.integration.test.ts test/revocation-cache.integration.test.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@agent-cred/verifier-sdk": "workspace:*",
     "fastify": "^5.6.2",
     "jose": "^6.1.2",
-    "pg": "^8.16.3"
+    "pg": "^8.16.3",
+    "redis": "^6.1.0"
   },
   "devDependencies": {
-    "@agent-cred/verifier-sdk": "workspace:*",
     "@types/node": "^24.10.1",
     "@types/pg": "^8.15.6",
     "tsx": "^4.21.0",

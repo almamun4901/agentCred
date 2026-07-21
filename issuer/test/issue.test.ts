@@ -35,6 +35,7 @@ describe("issuer routes", () => {
     const { privateKey } = await generateKeyPair("ES256");
     app = buildServer({
       repository: createMemoryRepository(),
+      publishRevocation: async () => undefined,
       signCredential: createCredentialSigner({
         issuer: "test-issuer",
         privateKey,
@@ -114,6 +115,7 @@ describe("issuer routes", () => {
           return null;
         },
       },
+      publishRevocation: async () => undefined,
       signCredential: createCredentialSigner({
         issuer: "test-issuer",
         privateKey,

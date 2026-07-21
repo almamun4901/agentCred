@@ -2,11 +2,19 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import Fastify, { type FastifyInstance } from "fastify";
+import { createClient } from "redis";
+import { cacheRevocation } from "@agent-cred/verifier-sdk";
 import {
   createIssuanceRepository,
   createPool,
+  createRevocationSyncRepository,
   type IssuanceRepository,
+  type Revocation,
 } from "./db.js";
+import {
+  createRevocationSynchronizer,
+  readSyncIntervalSeconds,
+} from "./jobs/sync-revocations.js";
 import { registerIssueRoutes } from "./routes/issue.js";
 import { registerRevokeRoutes } from "./routes/revoke.js";
 import {
@@ -18,6 +26,7 @@ import {
 export interface ServerDependencies {
   repository: IssuanceRepository;
   signCredential: CredentialSigner;
+  publishRevocation: (revocation: Revocation) => Promise<void>;
 }
 
 export function buildServer(
@@ -51,6 +60,7 @@ export function buildServer(
 
 const DEFAULT_DATABASE_URL =
   "postgresql://agentcred:agentcred-local-only@localhost:5432/agentcred";
+const DEFAULT_REDIS_URL = "redis://127.0.0.1:6379";
 
 async function start(): Promise<void> {
   const privateKeyPath = resolve(
@@ -59,27 +69,76 @@ async function start(): Promise<void> {
   const privateKeyPem = await readFile(privateKeyPath, "utf8");
   const privateKey = await importSigningKey(privateKeyPem);
   const pool = createPool(process.env.DATABASE_URL ?? DEFAULT_DATABASE_URL);
-  const app = buildServer(
-    {
-      repository: createIssuanceRepository(pool),
-      signCredential: createCredentialSigner({
-        issuer: process.env.ISSUER_ID ?? "agentcred-issuer",
-        privateKey,
-      }),
-    },
-    { logger: true },
-  );
-
-  app.addHook("onClose", async () => {
-    await pool.end();
+  let app: FastifyInstance | undefined;
+  const redis = createClient({
+    url: process.env.REDIS_URL ?? DEFAULT_REDIS_URL,
+    disableOfflineQueue: true,
   });
+  redis.on("error", () => {
+    if (app === undefined) {
+      console.error("Redis client error");
+    } else {
+      app.log.error("Redis client error");
+    }
+  });
+  let synchronizer: ReturnType<typeof createRevocationSynchronizer> | undefined;
 
-  const port = Number(process.env.PORT ?? 3000);
-  if (!Number.isInteger(port) || port < 1 || port > 65_535) {
-    throw new Error("PORT must be an integer between 1 and 65535");
+  try {
+    await redis.connect();
+    const repository = createIssuanceRepository(pool);
+    app = buildServer(
+      {
+        repository,
+        signCredential: createCredentialSigner({
+          issuer: process.env.ISSUER_ID ?? "agentcred-issuer",
+          privateKey,
+        }),
+        publishRevocation: async (revocation) => {
+          await cacheRevocation(redis, {
+            jti: revocation.jti,
+            expiresAt: revocation.expires_at,
+          });
+        },
+      },
+      { logger: true },
+    );
+    synchronizer = createRevocationSynchronizer({
+      repository: createRevocationSyncRepository(pool),
+      redis,
+      intervalSeconds: readSyncIntervalSeconds(
+        process.env.REVOCATION_SYNC_INTERVAL_SECONDS,
+      ),
+      logger: app.log,
+    });
+    app.addHook("onClose", async () => {
+      synchronizer?.stop();
+      if (redis.isOpen) {
+        await redis.quit();
+      }
+      await pool.end();
+    });
+
+    await synchronizer.syncOnce();
+    synchronizer.start();
+
+    const port = Number(process.env.PORT ?? 3000);
+    if (!Number.isInteger(port) || port < 1 || port > 65_535) {
+      throw new Error("PORT must be an integer between 1 and 65535");
+    }
+
+    await app.listen({ host: "127.0.0.1", port });
+  } catch (error: unknown) {
+    synchronizer?.stop();
+    if (app !== undefined) {
+      await app.close();
+    } else {
+      if (redis.isOpen) {
+        await redis.quit();
+      }
+      await pool.end();
+    }
+    throw error;
   }
-
-  await app.listen({ host: "127.0.0.1", port });
 }
 
 const isMainModule =

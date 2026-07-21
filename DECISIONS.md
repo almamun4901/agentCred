@@ -193,3 +193,30 @@ instead of erasing the original context.
 - **Revisit if:** Federated issuers require unknown-JTI revocation, evidence correction
   needs an append-only annotation model, or the endpoint is exposed beyond loopback
   and therefore requires operator authentication and authorization.
+
+## ADR-0012: Trust Redis misses only under a bounded freshness lease
+
+- **Date:** 2026-07-21
+- **Status:** Accepted for Phase 5
+- **Context:** Falling back to PostgreSQL on every Redis miss would leave the database
+  on the normal path for every valid credential and make the cache ineffective. Trusting
+  an unqualified miss could silently allow revoked credentials after the synchronizer
+  or Redis state becomes unhealthy.
+- **Options considered:** Query PostgreSQL after every miss; trust all Redis misses; or
+  trust misses only while a synchronizer-maintained freshness key is live.
+- **Decision:** Store each revoked JTI under an individual key expiring exactly with
+  its credential. A successful full sync refreshes a freshness key for three sync
+  intervals. Agent B treats a healthy, fresh miss as not revoked, but falls back to
+  PostgreSQL on Redis errors, malformed values, or a missing freshness key. The issuer
+  writes through after committing PostgreSQL and returns a retryable `503` if Redis
+  propagation fails. Out-of-band writes remain eventually consistent within the
+  configured sync interval.
+- **Tradeoffs:** Normal checks use one Redis round trip and cache failure remains safe,
+  but a directly inserted revocation can be allowed until the next sync. The live
+  five-second walkthrough observed its final stale allow 4.923 seconds after the
+  database write and its first denial after 5.029 seconds, including 100 ms polling
+  resolution. Full active-set synchronization is simple and robust at demo scale but
+  is not the final strategy for a large revocation table.
+- **Revisit if:** The revocation set requires incremental or event-driven propagation,
+  the stale-allow budget approaches zero, multiple issuer replicas require singleton
+  scheduling, or PostgreSQL fallback availability is no longer acceptable.

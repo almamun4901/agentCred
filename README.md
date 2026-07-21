@@ -212,3 +212,45 @@ PostgreSQL healthy:
 ```sh
 pnpm phase4:verify
 ```
+
+## Phase 5: distributed revocation cache
+
+Phase 5 moves normal revocation reads to Redis while PostgreSQL remains authoritative.
+Start both backing services before the issuer and Agent B:
+
+```sh
+pnpm services:up
+pnpm issuer:dev
+pnpm agent-b:dev
+```
+
+`POST /revoke` writes PostgreSQL first and then Redis. A successful response therefore
+makes the revocation visible to Agent B immediately. If Redis propagation fails after
+the database commit, the endpoint returns `503 revocation_propagation_unavailable`;
+retrying the request republishes the original immutable revocation.
+
+Out-of-band PostgreSQL writes demonstrate the consistency tradeoff. The issuer performs
+a full sync every five seconds by default. While its freshness lease is current, Agent B
+trusts a missing Redis JTI as not revoked, so a direct database revocation can remain
+temporarily usable until the next sync. Redis errors or an expired freshness lease fall
+back to PostgreSQL; failure of both sources returns `503 verification_unavailable`.
+
+The live default-interval walkthrough on 2026-07-21 produced:
+
+| Path | Evidence |
+|---|---|
+| API write-through | protected call `200` before revoke, revoke `200`, identical call `401` immediately after |
+| Out-of-band sync | final stale allow at 4.923s; first denial at 5.029s after the database write |
+
+The extra 29 ms is within the walkthrough's 100 ms observation polling resolution.
+This is bounded-staleness evidence, not a performance claim. Repeatable PostgreSQL vs.
+Redis p50/p95/p99 and throughput measurements remain Phase 7 work.
+
+Configuration defaults are `REDIS_URL=redis://127.0.0.1:6379` and
+`REVOCATION_SYNC_INTERVAL_SECONDS=5`. Revocation keys expire with their JWT, while the
+freshness lease expires after three missed sync intervals. Run the complete gate with
+both backing services healthy:
+
+```sh
+pnpm phase5:verify
+```

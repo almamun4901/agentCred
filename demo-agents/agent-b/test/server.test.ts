@@ -6,7 +6,7 @@ import {
   type IsRevoked,
 } from "@agent-cred/verifier-sdk";
 import { createPostgresAuditObserver } from "../src/audit.js";
-import { assertDatabaseReady, buildServer } from "../src/server.js";
+import { assertDatabaseReady, assertRedisReady, buildServer } from "../src/server.js";
 
 const nowSeconds = Math.floor(Date.now() / 1_000);
 
@@ -118,5 +118,13 @@ describe("Agent B", () => {
 
     await expect(assertDatabaseReady({ query } as never)).rejects.toBe(error);
     expect(query).toHaveBeenCalledWith("SELECT 1");
+  });
+
+  it("requires a PONG response from Redis during startup", async () => {
+    const ping = vi.fn().mockResolvedValue("NOT_READY");
+    await expect(assertRedisReady({ ping })).rejects.toThrow(
+      "Redis readiness check failed",
+    );
+    expect(ping).toHaveBeenCalledOnce();
   });
 });

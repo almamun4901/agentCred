@@ -16,3 +16,15 @@ export {
   type VerifierPreHandlerOptions,
 } from "./middleware.js";
 export { createPostgresRevocationChecker } from "./revocation.js";
+export {
+  REVOCATION_CACHE_PREFIX,
+  REVOCATION_FRESHNESS_KEY,
+  cacheRevocation,
+  createRedisRevocationChecker,
+  revocationCacheKey,
+  revocationExpirySeconds,
+  type CachedRevocation,
+  type RedisRevocationCheckerOptions,
+  type RevocationCacheReader,
+  type RevocationCacheWriter,
+} from "./revocation-cache.js";

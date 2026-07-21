@@ -4,9 +4,11 @@ import { fileURLToPath } from "node:url";
 import Fastify, { type FastifyInstance } from "fastify";
 import { importSPKI } from "jose";
 import pg from "pg";
+import { createClient } from "redis";
 import {
   createCredentialVerifier,
   createPostgresRevocationChecker,
+  createRedisRevocationChecker,
   createVerifierPreHandler,
   type VerificationEvent,
   type VerifyCredential,
@@ -17,6 +19,7 @@ const { Pool } = pg;
 
 const DEFAULT_DATABASE_URL =
   "postgresql://agentcred:agentcred-local-only@localhost:5432/agentcred";
+const DEFAULT_REDIS_URL = "redis://127.0.0.1:6379";
 const DEFAULT_QUOTE = "Trust is scoped, verified, and revocable.";
 
 export interface AgentBDependencies {
@@ -55,6 +58,15 @@ export async function assertDatabaseReady(
   await queryable.query("SELECT 1");
 }
 
+export async function assertRedisReady(
+  redis: { ping(): Promise<string> },
+): Promise<void> {
+  const response = await redis.ping();
+  if (response !== "PONG") {
+    throw new Error("Redis readiness check failed");
+  }
+}
+
 function readPort(value: string | undefined): number {
   const port = Number(value ?? 3001);
   if (!Number.isInteger(port) || port < 1 || port > 65_535) {
@@ -72,15 +84,31 @@ async function start(): Promise<void> {
   const audience = process.env.AGENT_B_AUDIENCE ?? "agent-b";
   const pool = new Pool({ connectionString: databaseUrl });
   let app: FastifyInstance | undefined;
+  const redis = createClient({
+    url: process.env.REDIS_URL ?? DEFAULT_REDIS_URL,
+    disableOfflineQueue: true,
+  });
+  redis.on("error", () => {
+    if (app === undefined) {
+      console.error("Redis client error");
+    } else {
+      app.log.error("Redis client error");
+    }
+  });
 
   try {
     await assertDatabaseReady(pool);
+    await redis.connect();
+    await assertRedisReady(redis);
     const publicKey = await importSPKI(await readFile(publicKeyPath, "utf8"), "ES256");
     const onDecision = createPostgresAuditObserver(pool);
     const verifyCredential = createCredentialVerifier({
       publicKey,
       issuer,
-      isRevoked: createPostgresRevocationChecker(pool),
+      isRevoked: createRedisRevocationChecker({
+        redis,
+        fallback: createPostgresRevocationChecker(pool),
+      }),
       onDecision,
       onDecisionError(error: unknown, event: VerificationEvent) {
         app?.log.error(
@@ -91,6 +119,9 @@ async function start(): Promise<void> {
     });
     app = buildServer({ verifyCredential, audience }, { logger: true });
     app.addHook("onClose", async () => {
+      if (redis.isOpen) {
+        await redis.quit();
+      }
       await pool.end();
     });
     await app.listen({ host: "127.0.0.1", port: readPort(process.env.PORT) });
@@ -98,6 +129,9 @@ async function start(): Promise<void> {
     if (app !== undefined) {
       await app.close();
     } else {
+      if (redis.isOpen) {
+        await redis.quit();
+      }
       await pool.end();
     }
     throw error;

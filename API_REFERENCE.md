@@ -5,6 +5,8 @@
 | Variable | Default | Purpose |
 |---|---|---|
 | `DATABASE_URL` | `postgresql://agentcred:agentcred-local-only@localhost:5432/agentcred` | PostgreSQL connection string |
+| `REDIS_URL` | `redis://127.0.0.1:6379` | Redis connection used for write-through and synchronization |
+| `REVOCATION_SYNC_INTERVAL_SECONDS` | `5` | Positive-integer interval for PostgreSQL-to-Redis synchronization |
 | `SIGNING_PRIVATE_KEY_PATH` | `keys/private.pem` | ES256 PKCS#8 private-key path, resolved from the issuer process directory |
 | `ISSUER_ID` | `agentcred-issuer` | Value written to the JWT `iss` claim |
 | `PORT` | `3000` | Loopback-only HTTP port |
@@ -121,6 +123,14 @@ revocation operators.
 { "error": "issuance_not_found" }
 ```
 
+**Response — 503:** PostgreSQL stored the revocation, but Redis write-through failed.
+The caller should retry the same idempotent request; the retry republishes the original
+revocation without changing its timestamp or reason.
+
+```json
+{ "error": "revocation_propagation_unavailable" }
+```
+
 Malformed input returns `400 validation_error`; an unexpected persistence failure
 returns a sanitized `500 internal_server_error`. The endpoint never accepts or
 returns a bearer credential.
@@ -141,7 +151,7 @@ The protected header is `{ "alg": "ES256", "typ": "JWT" }`.
 | `scope` | permitted action strings |
 | `delegation_chain` | empty array in Phase 1 |
 
-Last verified against code: 2026-07-20.
+Last verified against code: 2026-07-21.
 
 ## Verifier SDK
 
@@ -212,9 +222,11 @@ The middleware accepts only an `Authorization: Bearer <token>` header. It return
 when revocation status cannot be checked. Error bodies use
 `{ "error": "credential_denied", "reason": "..." }` and never include the token.
 
-The PostgreSQL adapter owns no connection lifecycle; the consuming service creates
-and closes its pool. The Phase 4 issuer writes revocations through `POST /revoke`.
-Phase 5 may replace the injected checker with Redis without changing the verifier API.
+The PostgreSQL and Redis adapters own no connection lifecycle; consuming services
+create and close their clients. Agent B uses Redis while the cache freshness lease is
+current. Redis errors or a missing lease fall back to PostgreSQL without changing the
+`IsRevoked` verifier API. If both sources fail, verification denies with
+`verification_unavailable`.
 
 ### Verification decision observer
 

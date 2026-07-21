@@ -18,6 +18,16 @@ export interface Revocation {
   jti: string;
   revoked_at: Date;
   reason: string | null;
+  expires_at: Date;
+}
+
+export interface ActiveRevocation {
+  jti: string;
+  expires_at: Date;
+}
+
+export interface RevocationSyncRepository {
+  listActiveRevocations(now: Date): Promise<ActiveRevocation[]>;
 }
 
 export interface IssuanceRepository {
@@ -68,10 +78,29 @@ export function createIssuanceRepository(pool: pg.Pool): IssuanceRepository {
          FROM issuances
          WHERE jti = $1
          ON CONFLICT (jti) DO UPDATE SET jti = existing.jti
-         RETURNING jti, revoked_at, reason`,
+         RETURNING jti, revoked_at, reason,
+           (SELECT expires_at FROM issuances WHERE issuances.jti = existing.jti)`,
         [jti, reason],
       );
       return result.rows[0] ?? null;
+    },
+  };
+}
+
+export function createRevocationSyncRepository(
+  pool: Pick<pg.Pool, "query">,
+): RevocationSyncRepository {
+  return {
+    async listActiveRevocations(now) {
+      const result = await pool.query<ActiveRevocation>(
+        `SELECT revocations.jti, issuances.expires_at
+         FROM revocations
+         INNER JOIN issuances ON issuances.jti = revocations.jti
+         WHERE issuances.expires_at > $1
+         ORDER BY revocations.jti`,
+        [now],
+      );
+      return result.rows;
     },
   };
 }
