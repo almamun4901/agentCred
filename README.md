@@ -2,364 +2,313 @@
 
 [![CI](https://github.com/almamun4901/agentCred/actions/workflows/ci.yml/badge.svg)](https://github.com/almamun4901/agentCred/actions/workflows/ci.yml)
 
-Monorepo scaffold for a scoped credential issuer and verifier for agent-to-agent calls.
+AgentCred is a working issuer and verifier for short-lived, scoped credentials used
+between autonomous services. It demonstrates one narrow security boundary: an agent
+may call another service only for the exact action, audience, principal, and lifetime
+encoded in a signed credential, and that authority can be revoked before expiry.
 
-See [PROJECT_PLAN.md](./PROJECT_PLAN.md) for the complete project plan and current
-phase status. Architecture choices and tradeoffs are recorded in
-[DECISIONS.md](./DECISIONS.md).
+The project is deliberately not a new identity protocol or a claim of compliance with
+an emerging agent standard. It is an evidence-backed implementation of the underlying
+credential, authorization, revocation, rate-limit, and audit mechanics those protocols
+need from a resource server.
 
-## Phase 0: local setup
+## Why this exists
 
-Prerequisites: Node.js 22+, pnpm 10+, and Docker with Docker Compose.
+A general-purpose bearer token answers “does this caller possess a secret?” It does
+not necessarily answer the questions that matter when software acts autonomously:
 
-```sh
-pnpm install
-pnpm db:up
-pnpm db:verify
-```
+- Which agent is calling, and for which accountable principal?
+- Which receiving service may accept the credential?
+- Which exact action was delegated?
+- Can the authority be withdrawn before the token expires?
+- Can a verifier fail safely when its policy dependencies are unavailable?
+- Can an operator reconstruct allowed and denied actions without logging credentials?
 
-PostgreSQL listens only on `127.0.0.1:5432`. On the first startup, Docker runs
-`db/schema.sql` automatically and creates the `issuances`, `revocations`, and
-`verification_log` tables.
+This is an active standards problem. The
+[NIST AI Agent Standards Initiative](https://www.nist.gov/artificial-intelligence/ai-agent-standards-initiative)
+and its
+[agent identity and authorization work](https://www.nist.gov/news-events/news/2026/02/new-concept-paper-identity-and-authority-software-agents)
+focus on secure agent action on behalf of users. The
+[MCP authorization specification](https://modelcontextprotocol.io/specification/2025-06-18/basic/authorization)
+uses established OAuth resource-server patterns; the emerging community
+[MCP-I specification](https://modelcontextprotocol-identity.io/) explores verifiable
+agent identity and delegation; and
+[A2A](https://a2a-protocol.org/v0.3.0/specification/) leaves authorization to the
+receiving service, including action- and scope-based policy. The IETF
+[Agent Authorization Profile draft](https://datatracker.ietf.org/doc/html/draft-aap-oauth-profile-00)
+similarly explores JWT claims for agent identity, task constraints, and delegation.
 
-The local connection string is:
+AgentCred implements none of those protocols end to end. It makes their shared
+resource-server questions concrete and testable.
+
+## What the demo proves
+
+Agent A first requests a credential for `read:weather`, then attempts to call Agent B's
+`read:quote:basic` route. Agent B returns `403 scope_exceeded`. Agent A requests a
+second credential with the exact scope and repeats the call; Agent B returns `200`.
+Both decisions are written to PostgreSQL without storing or logging the JWT.
 
 ```text
-postgresql://agentcred:agentcred-local-only@localhost:5432/agentcred
+DENIED 403 scope_exceeded (read:weather cannot read a quote)
+ALLOWED 200 Trust is scoped, verified, and revocable.
+Phase 3 demo passed: attempted overreach was blocked, correct scope was allowed.
 ```
 
-Set `POSTGRES_PASSWORD` or `POSTGRES_PORT` before starting Compose to override the
-development defaults. To rerun the schema from a clean database, use
-`pnpm db:reset`. This deletes the local PostgreSQL volume.
+The proof is deterministic rather than “AI theater”: Agent A is a one-shot client and
+Agent B serves a static quote, keeping the authorization boundary visible.
 
-## Phase 1: local issuer
+## Architecture
 
-The issuer is a loopback-only demonstration service. Its `POST /issue` endpoint is
-intentionally unauthenticated in Phase 1, so do not expose port 3000 to an untrusted
-network.
+```mermaid
+flowchart LR
+    A["Agent A<br/>requesting agent"]
+    I["Issuer<br/>ES256 private key"]
+    B["Agent B<br/>verifier middleware"]
+    PG[("PostgreSQL<br/>issuance, policy, audit")]
+    R[("Redis<br/>revocation cache, counters")]
 
-Generate a local ES256 signing keypair and start the issuer:
-
-```sh
-pnpm issuer:keys
-pnpm issuer:dev
+    A -->|"1. POST /issue<br/>principal + scope + audience"| I
+    I -->|"2. store issuance"| PG
+    I -->|"3. short-lived signed JWT"| A
+    A -->|"4. Bearer JWT + requested action"| B
+    B -->|"5. signature, issuer, audience,<br/>expiry, claims, exact scope"| B
+    B -->|"6. revocation read"| R
+    R -.->|"safe fallback"| PG
+    B -->|"7. exact rate policy"| PG
+    B -->|"8. atomic shared counter"| R
+    B -->|"9. allow or deny audit"| PG
+    I -->|"revoke: commit first"| PG
+    I -->|"write-through + periodic sync"| R
 ```
 
-Key generation refuses to replace an existing pair unless you explicitly run
-`pnpm issuer:keys -- --force`. Generated keys live in the gitignored `issuer/keys/`
-directory.
+The verifier evaluates trust in this order:
 
-Issue a five-minute credential from another terminal:
+1. Verify an ES256 signature and enforce the exact issuer, audience, expiry, JWT type,
+   algorithm, and required claim shapes.
+2. Check revocation. Redis is the normal path; stale or unavailable cache state falls
+   back to authoritative PostgreSQL.
+3. Require an exact action string in `scope`.
+4. Resolve an exact `(principal, audience, scope)` policy and atomically consume its
+   shared Redis fixed-window budget.
+5. Persist the finalized decision and return the protected response or a stable denial.
 
-```sh
-curl --fail-with-body http://127.0.0.1:3000/issue \
-  --header 'content-type: application/json' \
-  --data '{
-    "agent_id": "agent-a",
-    "principal": "company-x",
-    "scope": ["read:weather"],
-    "aud": "agent-b",
-    "ttl": 300
-  }'
-```
+Invalid, revoked, and out-of-scope requests never consume legitimate rate capacity.
 
-The response contains a bearer credential and should not be copied into logs or shared.
-Decode it locally with `jose` and `issuer/keys/public.pem`, or use a short-lived throwaway
-token if inspecting it on jwt.io. The full endpoint and claim contracts are documented
-in [API_REFERENCE.md](./API_REFERENCE.md).
+## Credential contract
 
-Run the verification suites with PostgreSQL healthy:
+The issuer signs only ES256 JWTs with `{ "alg": "ES256", "typ": "JWT" }`.
 
-```sh
-pnpm issuer:test
-pnpm issuer:test:integration
-pnpm --filter @agent-cred/issuer typecheck
-pnpm --filter @agent-cred/issuer build
-```
+| Claim | Example | Security meaning |
+|---|---|---|
+| `iss` | `agentcred-issuer` | Exact trusted issuer; not caller-controlled at verification time |
+| `sub` | `agent-a` | Agent identifier supplied at issuance |
+| `principal` | `company-x` | Accountable identity on whose behalf the agent acts |
+| `aud` | `agent-b` | Only the intended receiving service may accept the credential |
+| `scope` | `["read:quote:basic"]` | Exact permitted action strings; no wildcard or prefix matching |
+| `iat` | `1753099200` | Issuance time in Unix seconds |
+| `exp` | `1753099500` | Expiry; exactly `iat + ttl`, with a maximum TTL of one hour |
+| `jti` | UUID | Unique identifier used for storage and revocation |
+| `delegation_chain` | `[]` | Reserved shape; delegation is not implemented in this version |
 
-## Phase 2: verifier SDK
+Credentials are bearer tokens. AgentCred prevents scope, audience, issuer, expiry, and
+revocation violations, but it does not bind a token to the caller's key or prevent a
+stolen valid token from being replayed within its remaining authority.
 
-The verifier SDK validates an ES256 credential's signature, issuer, expiry, audience,
-required claims, revocation status, and exact requested scope. It fails closed if the
-revocation source is unavailable. A Fastify pre-handler is included for protecting
-individual routes and attaches verified claims to allowed requests.
+## Core verifier cases
 
-The public API and middleware response contract are documented in
-[API_REFERENCE.md](./API_REFERENCE.md). Run its verification gates with PostgreSQL
-healthy:
+These six cases form the original credibility gate. The suite also covers malformed
+claims, wrong issuer, cache failure, rate limiting, HTTP mappings, observer isolation,
+and concurrent shared-counter behavior.
 
-```sh
-pnpm verifier:test
-pnpm verifier:test:integration
-pnpm --filter @agent-cred/verifier-sdk typecheck
-pnpm --filter @agent-cred/verifier-sdk build
-```
+| Case | Expected decision | What it proves |
+|---|---|---|
+| Valid signature, audience, scope, and active JTI | Allow | The intended request crosses the boundary |
+| Expired credential | Deny `expired` | Short lifetime is enforced with zero clock tolerance |
+| Wrong audience | Deny `aud_mismatch` | A token issued for one service cannot be replayed at another |
+| Revoked JTI | Deny `revoked` | Authority can be withdrawn before JWT expiry |
+| Missing exact action | Deny `scope_exceeded` | Possessing a valid token does not grant broader capability |
+| Tampered signature | Deny `invalid_signature` | Claims are trusted only after ES256 verification |
 
-Phase 2 reads the existing `revocations` table. Phase 3 adds verification audit writes,
-Phase 4 adds the revoke endpoint, and Phase 5 will replace the injected database lookup
-with a Redis-backed implementation.
+Middleware maps unusable credentials to `401`, insufficient scope to `403`, exhausted
+budgets to `429` with `Retry-After`, and unavailable verification dependencies to
+`503`. Stable result types and the complete route contract are documented in
+[API_REFERENCE.md](./API_REFERENCE.md).
 
-## Phase 3: demo agents
+## Run the container demo
 
-Phase 3 demonstrates attempted overreach rather than simulating an intelligent agent.
-Agent A is a deterministic one-shot client; Agent B exposes a static protected quote
-so the credential boundary remains the visible behavior.
-
-Run PostgreSQL first. On a fresh volume, Compose applies `db/schema.sql`
-automatically; do not reapply that non-idempotent file to an initialized database.
+Prerequisites: Node.js 22+, pnpm 10.30.1, Docker, and Docker Compose.
 
 ```sh
-pnpm db:up
-pnpm issuer:keys # first run only; generation refuses to overwrite existing keys
-```
-
-Then use three terminals for the local services and demo trigger:
-
-```sh
-# Terminal 1
-pnpm issuer:dev
-
-# Terminal 2
-pnpm agent-b:dev
-
-# Terminal 3
-pnpm agent-a:demo
-```
-
-Agent A prints a unique `principal`. Use it to retrieve only that run's audit evidence:
-
-```sh
-docker compose exec -T postgres psql -U agentcred -d agentcred -c \
-  "SELECT jti, decision, denial_reason, requested_action, audience, verified_at FROM verification_log WHERE principal = 'PASTE_PRINTED_PRINCIPAL' ORDER BY id;"
-```
-
-The result must contain a `deny` / `scope_exceeded` row followed by an `allow` row.
-Neither terminal output nor audit metadata includes the bearer credentials.
-
-Run the complete local Phase 3 gate with PostgreSQL healthy:
-
-```sh
-pnpm phase3:verify
-```
-
-The CI gate reruns this regression chain on every push and pull request as part of the
-complete Phase 8 verification described below.
-
-### Audit availability tradeoff
-
-Agent B awaits each audit insert so the response and durable evidence remain closely
-correlated. This adds one database round trip. A failed insert is retried once after
-100 ms; if both attempts fail, Agent B logs the audit gap loudly but preserves the
-already-finalized authorization response. This fail-open audit policy favors service
-availability. A compliance-oriented system may instead fail closed, while a
-latency-oriented system may use an outbox or fire-and-forget queue.
-
-## Phase 4: revocation and denial reporting
-
-The issuer's `POST /revoke` endpoint accepts a stored JTI and an optional reason.
-Revocation is permanent and idempotent: a retry returns the original timestamp and
-reason. The endpoint is intentionally unauthenticated for this loopback-only demo and
-must not be exposed to an untrusted network.
-
-With PostgreSQL, the issuer, and Agent B running as described above, issue a correctly
-scoped credential and retain it only in shell variables:
-
-```sh
-ISSUED=$(curl --fail-with-body http://127.0.0.1:3000/issue \
-  --header 'content-type: application/json' \
-  --data '{
-    "agent_id": "agent-a",
-    "principal": "phase4-demo",
-    "scope": ["read:quote:basic"],
-    "aud": "agent-b",
-    "ttl": 300
-  }')
-TOKEN=$(printf '%s' "$ISSUED" | node -e \
-  'let s="";process.stdin.on("data",c=>s+=c).on("end",()=>process.stdout.write(JSON.parse(s).token))')
-JTI=$(TOKEN="$TOKEN" node -e \
-  'const p=process.env.TOKEN.split(".")[1];process.stdout.write(JSON.parse(Buffer.from(p,"base64url")).jti)')
-```
-
-The first protected call succeeds. Revoke the JTI, then retry the identical credential:
-
-```sh
-curl --fail-with-body http://127.0.0.1:3001/get-quote \
-  --header "authorization: Bearer $TOKEN"
-
-curl --fail-with-body http://127.0.0.1:3000/revoke \
-  --header 'content-type: application/json' \
-  --data "{\"jti\":\"$JTI\",\"reason\":\"phase 4 walkthrough\"}"
-
-curl --include http://127.0.0.1:3001/get-quote \
-  --header "authorization: Bearer $TOKEN"
-```
-
-The last response is `401` with `{"error":"credential_denied","reason":"revoked"}`.
-The shell variables contain the bearer credential, so unset them when finished:
-
-```sh
-unset ISSUED TOKEN JTI
-```
-
-Show denial activity from the previous hour, grouped by reason:
-
-```sh
-pnpm report:denials
-```
-
-The report returns `denial_reason`, `denial_count`, `first_occurrence`, and
-`latest_occurrence`, ordered by count and reason. Run the complete Phase 4 gate with
-PostgreSQL healthy:
-
-```sh
-pnpm phase4:verify
-```
-
-## Phase 5: distributed revocation cache
-
-Phase 5 moves normal revocation reads to Redis while PostgreSQL remains authoritative.
-Start both backing services before the issuer and Agent B:
-
-```sh
-pnpm services:up
-pnpm issuer:dev
-pnpm agent-b:dev
-```
-
-`POST /revoke` writes PostgreSQL first and then Redis. A successful response therefore
-makes the revocation visible to Agent B immediately. If Redis propagation fails after
-the database commit, the endpoint returns `503 revocation_propagation_unavailable`;
-retrying the request republishes the original immutable revocation.
-
-Out-of-band PostgreSQL writes demonstrate the consistency tradeoff. The issuer performs
-a full sync every five seconds by default. While its freshness lease is current, Agent B
-trusts a missing Redis JTI as not revoked, so a direct database revocation can remain
-temporarily usable until the next sync. Redis errors or an expired freshness lease fall
-back to PostgreSQL; failure of both sources returns `503 verification_unavailable`.
-
-The live default-interval walkthrough on 2026-07-21 produced:
-
-| Path | Evidence |
-|---|---|
-| API write-through | protected call `200` before revoke, revoke `200`, identical call `401` immediately after |
-| Out-of-band sync | final stale allow at 4.923s; first denial at 5.029s after the database write |
-
-The extra 29 ms is within the walkthrough's 100 ms observation polling resolution.
-This is bounded-staleness evidence; Phase 7 measures performance separately below.
-
-Configuration defaults are `REDIS_URL=redis://127.0.0.1:6379` and
-`REVOCATION_SYNC_INTERVAL_SECONDS=5`. Revocation keys expire with their JWT, while the
-freshness lease expires after three missed sync intervals. Run the complete gate with
-both backing services healthy:
-
-```sh
-pnpm phase5:verify
-```
-
-## Phase 6: principal-scoped rate limiting
-
-Phase 6 adds configurable request budgets without placing them in JWTs. PostgreSQL
-stores exact policies by principal, audience, and scope; Redis atomically enforces a
-fixed window shared by every credential for that tuple. Rotating to a new JTI therefore
-does not reset the budget.
-
-Apply the non-destructive schema migration after starting the stateful services:
-
-```sh
-pnpm services:up
-pnpm db:migrate
-```
-
-Agent B evaluates signature and claims, revocation, and exact scope before consuming
-rate capacity. A missing policy means unlimited access. A policy or Redis failure
-fails closed as `503 verification_unavailable`; exceeding a policy returns `429
-rate_limited` with `Retry-After`. Fixed windows are intentionally simple and can allow
-boundary bursts; sliding-window enforcement remains a production evolution.
-
-With the issuer and Agent B running, the repeatable demo installs a local 3/minute
-policy, clears only that demo counter, issues two credentials for the same principal,
-and proves that the fourth alternating-token request is denied:
-
-```sh
-pnpm phase6:demo
-```
-
-Run the complete Phase 6 gate with PostgreSQL and Redis healthy:
-
-```sh
-pnpm phase6:verify
-```
-
-## Phase 7: verifier load test
-
-Phase 7 exercises the Fastify verifier middleware through its in-memory injection
-path, retaining JWT verification and route handling while excluding socket latency and
-PostgreSQL audit writes. Each scenario ran three five-second trials after a two-second
-warm-up. Latency percentiles use the same concurrency of 32; throughput is the best
-median from the 1/8/32/64 concurrency sweep.
-
-| Scenario | p50 (ms) | p95 (ms) | p99 (ms) | Max sustained req/s |
-|---|---:|---:|---:|---:|
-| PostgreSQL revocation | 1.679 | 2.676 | 3.472 | 18,331 |
-| Redis revocation | 0.795 | 1.190 | 2.702 | 46,454 |
-| Redis revocation + PostgreSQL policy + Redis rate limit | 2.152 | 3.297 | 4.258 | 15,268 |
-
-On the recorded Apple M5 Pro local run, Redis cut median revocation latency by 52.7%
-and reached 2.53 times PostgreSQL's peak throughput. The rate-limited path shows the
-cost of retaining an exact PostgreSQL policy read before the Redis counter operation;
-it is evidence to evaluate a future bounded-stale policy cache, not a production
-capacity claim. Full environment metadata and methodology are in
-[PERFORMANCE.md](./PERFORMANCE.md).
-
-With PostgreSQL and Redis healthy, reproduce the benchmark or run its complete gate:
-
-```sh
-pnpm phase7:benchmark
-pnpm phase7:verify
-```
-
-## Phase 8: containerized local stack
-
-Phase 8 packages the issuer, Agent B, and the one-shot Agent A demo as immutable
-multi-stage images. PostgreSQL and Redis remain the stateful backing services. Start
-the long-running stack, then run the deny-then-allow demo entirely on the private
-Compose network:
-
-```sh
+pnpm install --frozen-lockfile
 docker compose up --build --wait
 docker compose --profile demo run --rm agent-a
 ```
 
-The first command initializes a local ES256 keypair in named volumes. The issuer
-mounts only the private-key volume and Agent B mounts only the public-key volume;
-neither key is copied into an image. Application containers run as UID 10001 with a
-read-only root filesystem, dropped capabilities, health checks, and graceful signal
-handling. Host-published ports remain bound to `127.0.0.1`.
+The Compose stack creates or reuses a local ES256 signing identity, starts PostgreSQL
+and Redis, then health-gates the issuer and Agent B. Application containers run as UID
+10001 with read-only root filesystems and dropped Linux capabilities. Agent B receives
+only the public-key volume; no application image contains a PEM or key file.
 
-Normal restarts and `docker compose down` preserve PostgreSQL, Redis, and the signing
-identity. `docker compose down --volumes` intentionally deletes all four local data
-volumes, including the signing identity, so the next startup generates a new keypair.
-
-The full Phase 8 gate first runs every earlier regression gate, then creates an
-isolated clean-volume Compose project on alternate host ports. It verifies the
-containerized demo, audit evidence, non-root execution, private-key isolation, image
-contents, health, and key persistence before removing only its test-scoped volumes:
+Inspect the printed demo principal's two audit rows:
 
 ```sh
-pnpm phase8:verify
+docker compose exec -T postgres psql -U agentcred -d agentcred -c \
+  "SELECT decision, denial_reason, requested_action, audience, verified_at FROM verification_log WHERE principal = 'PASTE_PRINTED_PRINCIPAL' ORDER BY id;"
 ```
 
-## Phase 9: continuous integration
+Stop the stack without deleting its database, cache, or signing identity:
 
-GitHub Actions runs one required `CI` job on every push and pull request. The job uses
-Node.js 22 and pnpm 10.30.1, installs from the frozen lockfile, starts PostgreSQL and
-Redis, runs `pnpm lint`, and then runs the complete Phase 8 gate above. The gate builds
-all application images for verification but does not publish them.
+```sh
+docker compose down
+```
 
-The equivalent local checks are:
+`docker compose down --volumes` intentionally deletes all local state, including the
+signing identity.
+
+## Evidence, not assertions
+
+### Automated verification
+
+The required GitHub `CI` check runs on every push and pull request with read-only
+repository permission. It performs a frozen install, lint, 109 unit tests, 14
+real-backend integration cases, every workspace typecheck and build, a three-path
+benchmark smoke run, and the clean-volume container security/demo lifecycle. It builds
+the issuer, Agent A, and Agent B images but never publishes them.
+
+The merge gate was proven red and green: a deliberately broken test failed CI in
+33–39 seconds, and the isolated revert restored passing runs. `main` requires the
+strict `CI` context, including for administrators; force pushes and deletion are
+disabled.
+
+Run the same complete gate locally:
 
 ```sh
 pnpm services:up
 pnpm lint
 pnpm phase8:verify
 ```
+
+### Revocation consistency
+
+PostgreSQL is authoritative. `POST /revoke` commits there first, then writes through to
+Redis. A successful response makes the revocation immediately visible. If Redis
+propagation fails after the commit, the issuer returns retryable `503` and an
+idempotent retry republishes the immutable record.
+
+Out-of-band database writes are eventually consistent. A five-second full synchronizer
+maintains a freshness lease in Redis; a fresh miss is trusted, but an expired lease,
+malformed cache value, or Redis error falls back to PostgreSQL. If both sources fail,
+verification fails closed.
+
+The recorded walkthrough observed its final stale allow at 4.923 seconds and its first
+denial at 5.029 seconds after a direct PostgreSQL revocation, with 100 ms polling. This
+is a measured stale-read window, not an “instant revocation” claim.
+
+### Rate limiting
+
+Policies live in PostgreSQL and are keyed by `principal:audience:scope`; counters live
+in Redis and are updated atomically with Redis server time. The key deliberately
+excludes `jti`, so rotating credentials cannot reset a principal's budget. Missing
+policies mean unlimited access; policy or counter failures fail closed.
+
+The implementation uses a fixed window because it is small and explainable. It allows
+boundary bursting and is not presented as the fairest production algorithm.
+
+### Measured verifier paths
+
+These results are from three five-second trials after a two-second warm-up on an Apple
+M5 Pro. Requests use Fastify's in-memory injection path: JWT and middleware work are
+included; socket latency and audit writes are excluded.
+
+| Scenario | p50 | p95 | p99 | Peak throughput |
+|---|---:|---:|---:|---:|
+| PostgreSQL revocation | 1.679 ms | 2.676 ms | 3.472 ms | 18,331 req/s |
+| Redis revocation | 0.795 ms | 1.190 ms | 2.702 ms | 46,454 req/s |
+| Redis revocation + PostgreSQL policy + Redis limit | 2.152 ms | 3.297 ms | 4.258 ms | 15,268 req/s |
+
+Redis reduced median revocation latency by 52.7% and reached 2.53× the direct
+PostgreSQL path's peak throughput on this machine. The rate-limited path shows the cost
+of an exact database policy read on every limited request. These are comparative local
+middleware measurements, not production capacity claims. Full methodology, operation
+counts, and reproduction flags are in [PERFORMANCE.md](./PERFORMANCE.md).
+
+## Design choices and tradeoffs
+
+| Choice | Why | Cost / revisit condition |
+|---|---|---|
+| ES256 asymmetric signing | Verifiers need only a public key; no shared signing secret crosses the boundary | Rotation requires overlapping keys and a key-discovery mechanism |
+| Exact `aud` and scope enforcement | Prevents cross-service replay and capability overreach | No hierarchical or wildcard permission model |
+| PostgreSQL authority + Redis cache | Preserves durable revocation truth while accelerating normal reads | Out-of-band writes have a bounded stale window |
+| PostgreSQL policy + Redis counter | Policy changes apply immediately and replicas share enforcement | Adds a database read to every limited request |
+| Fail-safe verification fallback | Cache failure never silently becomes “not revoked” | Dependency failures can reduce availability with `503` |
+| Awaited audit observer | Keeps responses closely correlated with durable evidence | Adds a database round trip; audit failure is logged but does not reverse authorization |
+| Immutable non-root images | Makes the local artifact close to a production runtime baseline | Local named volumes are not production secret management |
+
+Detailed alternatives, consequences, and revisit conditions are recorded in
+[DECISIONS.md](./DECISIONS.md).
+
+## What this does not solve
+
+- **No production issuer authentication.** `/issue` and `/revoke` are intentionally
+  unauthenticated and loopback-only. A deployed issuer must authorize callers and
+  revocation operators.
+- **No key rotation or discovery.** One issuer and one ES256 keypair are configured
+  directly; there is no `kid`, JWKS endpoint, trust federation, or overlapping-key
+  rollout.
+- **No proof of possession.** A stolen live JWT can be replayed within its audience,
+  scope, and remaining lifetime.
+- **No delegation semantics.** `delegation_chain` is structurally validated but always
+  issued empty; user consent, transitive constraints, and chain verification are out of
+  scope.
+- **No multi-issuer policy model.** Agent B trusts one configured issuer and exact
+  action strings only.
+- **No zero-staleness revocation.** Direct database writes can remain usable until the
+  next cache synchronization; API revocations use immediate write-through.
+- **No perfect rate-limit fairness.** Fixed windows permit boundary bursts, and policy
+  lookups are not cached.
+- **No guaranteed audit durability.** Agent B retries an audit insert once, logs a
+  structured gap if both writes fail, and preserves the already-finalized authorization
+  response.
+- **No production network perimeter.** Compose binds host ports to loopback and has no
+  TLS, WAF, load balancer, multi-region availability, or production observability.
+- **No AWS deployment yet.** Terraform infrastructure and continuous deployment are
+  intentionally deferred; the implemented artifact is local plus GitHub CI.
+
+## Repository map
+
+```text
+issuer/                 ES256 issuance, revocation API, Redis synchronizer
+verifier-sdk/           reusable verifier, Fastify middleware, cache/rate adapters
+demo-agents/agent-a/    deterministic deny-then-allow client
+demo-agents/agent-b/    protected quote service and audit integration
+db/                     PostgreSQL schema, migration, and denial report
+scripts/                isolated clean-container verification
+.github/workflows/      required CI gate; deployment remains a placeholder
+```
+
+Useful references:
+
+- [API_REFERENCE.md](./API_REFERENCE.md) — endpoint, claim, middleware, and
+  configuration contracts
+- [PERFORMANCE.md](./PERFORMANCE.md) — benchmark methodology and evidence
+- [DECISIONS.md](./DECISIONS.md) — architecture decision records
+- [RUNBOOK.md](./RUNBOOK.md) — operational failure notes
+- [PROJECT_PLAN.md](./PROJECT_PLAN.md) — implementation history and deferred phases
+
+## Deferred AWS deployment
+
+Terraform and AWS continuous deployment have not been implemented, so this repository
+does not claim operational lessons it has not earned. When cloud work resumes, the
+intended small architecture is ECR plus ECS/Fargate, RDS PostgreSQL, Secrets Manager,
+and either an in-task Redis sidecar for cost control or ElastiCache for managed-service
+realism. Phase 10 must prove `plan`, `apply`, and `destroy`; Phase 11 must prove image
+publication, task-definition revision, deployment health, and the same deny-then-allow
+smoke path before any AWS claims are added here.
+
+## Current status
+
+Phases 0–9 and 12 are implemented locally and enforced by CI. AWS infrastructure
+(Phase 10) and continuous deployment (Phase 11) are intentionally deferred until cloud
+work resumes. The next production-oriented step is therefore not “add more agent
+behavior”; it is to add authenticated issuer operations, managed keys and rotation,
+network controls, and a deliberately small deployment architecture.
