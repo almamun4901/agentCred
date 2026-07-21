@@ -19,7 +19,7 @@ alternatives, and consequences are recorded in [DECISIONS.md](./DECISIONS.md).
 | Phase 6 — Rate Limiting | Complete | Atomic Redis enforcement, rotation-resistant demo, and audit evidence passed |
 | Phase 7 — Load Test | Complete | Three-path middleware benchmark captured latency and throughput evidence |
 | Phase 8 — Dockerization | Complete | Clean-volume Compose demo, hardened images, key isolation, and full regression gate passed |
-| Phase 9 — CI | In progress | Local lint and full Phase 8 CI-equivalent gate pass; remote fail/pass and branch-protection proof remain |
+| Phase 9 — CI | Complete | Required strict CI gate passed after recorded red/green PR proof |
 | Phase 10 — Terraform | Not started | Provision the documented AWS architecture |
 | Phase 11 — CD | Not started | Connect verified images to AWS deployment |
 | Phase 12 — README + Framing | Not started | Publish evidence, tradeoffs, and demo narrative |
@@ -566,7 +566,7 @@ not as a standalone feature.
 
 ---
 
-### Phase 9 — CI (GitHub Actions) (2h) — In progress 2026-07-21
+### Phase 9 — CI (GitHub Actions) (2h) — Complete 2026-07-21
 
 - [x] Add a least-privilege, concurrency-canceling `CI` workflow for every push and
   pull request with immutable action pins, Node.js 22, pnpm 10.30.1, frozen installs,
@@ -574,14 +574,26 @@ not as a standalone feature.
 - [x] Add a repository-wide ESLint flat configuration and root `pnpm lint` command.
 - [x] Start PostgreSQL and Redis, lint, and run the full Phase 8 verification chain,
   including all application image builds without publishing them.
-- [ ] Record a deliberately failing pull-request revision followed by a passing fix.
-- [ ] Require the `CI` check on `main` with strict checking and administrator
+- [x] Record a deliberately failing pull-request revision followed by a passing fix.
+- [x] Require the `CI` check on `main` with strict checking and administrator
   enforcement.
 
 **Testing after this task:**
 - [x] Local frozen install, lint, and complete Phase 8 gate pass.
-- [ ] Open a PR with a deliberately broken test → confirm CI fails.
-- [ ] Fix it → confirm CI passes and blocks merge through branch protection.
+- [x] Open a PR with a deliberately broken test → confirm CI fails.
+- [x] Fix it → confirm CI passes and blocks merge through branch protection.
+
+**Verification recorded 2026-07-21:**
+
+- The first clean GitHub runner exposed that issuer unit tests depended on a locally
+  prebuilt verifier package. Commit `acfd083` moved the verifier build ahead of its
+  dependents; both push and pull-request runs then passed the complete gate.
+- Deliberately broken commit `9f4f58c` failed both `CI` runs in 33-39 seconds. Revert
+  `da93adb` removed only that assertion, and corrected runs `29862757184` and
+  `29862757732` passed in 2m29s and 2m38s.
+- GitHub branch protection on `main` requires the `CI` context, requires branches to
+  be up to date, and enforces the rule for administrators. Pull request #1 reports a
+  clean, mergeable state only after both corrected checks succeeded.
 
 ---
 
