@@ -10,8 +10,6 @@ function jsonResponse(body: unknown, status = 200): Response {
 
 describe("runDemo", () => {
   it("runs the deny-then-allow sequence without printing credentials", async () => {
-    expect("phase9-ci-proof").toBe("intentionally-broken");
-
     const fetch = vi
       .fn<typeof globalThis.fetch>()
       .mockResolvedValueOnce(jsonResponse({ token: "sensitive-overreach-token" }))
