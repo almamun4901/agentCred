@@ -35,6 +35,115 @@ services:
       retries: 15
       start_period: 5s
 
+  key-init:
+    build:
+      context: .
+      dockerfile: issuer/Dockerfile
+      target: key-init
+    restart: "no"
+    environment:
+      APPLICATION_UID: "10001"
+      APPLICATION_GID: "10001"
+      PRIVATE_KEYS_DIRECTORY: /keys/private
+      PUBLIC_KEYS_DIRECTORY: /keys/public
+    volumes:
+      - signing-private:/keys/private
+      - signing-public:/keys/public
+
+  issuer:
+    build:
+      context: .
+      dockerfile: issuer/Dockerfile
+      target: runtime
+    restart: unless-stopped
+    init: true
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    environment:
+      DATABASE_URL: postgresql://agentcred:${POSTGRES_PASSWORD:-agentcred-local-only}@postgres:5432/agentcred
+      REDIS_URL: redis://redis:6379
+      REVOCATION_SYNC_INTERVAL_SECONDS: ${REVOCATION_SYNC_INTERVAL_SECONDS:-5}
+      SIGNING_PRIVATE_KEY_PATH: /keys/private/private.pem
+      ISSUER_ID: agentcred-issuer
+      HOST: 0.0.0.0
+      PORT: "3000"
+    ports:
+      - "127.0.0.1:${ISSUER_PORT:-3000}:3000"
+    tmpfs:
+      - /tmp
+    volumes:
+      - signing-private:/keys/private:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      key-init:
+        condition: service_completed_successfully
+
+  agent-b:
+    build:
+      context: .
+      dockerfile: demo-agents/agent-b/Dockerfile
+      target: runtime
+    restart: unless-stopped
+    init: true
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    environment:
+      DATABASE_URL: postgresql://agentcred:${POSTGRES_PASSWORD:-agentcred-local-only}@postgres:5432/agentcred
+      REDIS_URL: redis://redis:6379
+      VERIFYING_PUBLIC_KEY_PATH: /keys/public/public.pem
+      ISSUER_ID: agentcred-issuer
+      AGENT_B_AUDIENCE: agent-b
+      HOST: 0.0.0.0
+      PORT: "3001"
+    ports:
+      - "127.0.0.1:${AGENT_B_PORT:-3001}:3001"
+    tmpfs:
+      - /tmp
+    volumes:
+      - signing-public:/keys/public:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      key-init:
+        condition: service_completed_successfully
+
+  agent-a:
+    profiles: ["demo"]
+    build:
+      context: .
+      dockerfile: demo-agents/agent-a/Dockerfile
+      target: runtime
+    restart: "no"
+    init: true
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    environment:
+      ISSUER_BASE_URL: http://issuer:3000
+      AGENT_B_BASE_URL: http://agent-b:3001
+    tmpfs:
+      - /tmp
+    depends_on:
+      issuer:
+        condition: service_healthy
+      agent-b:
+        condition: service_healthy
+
 volumes:
   postgres-data:
   redis-data:
+  signing-private:
+  signing-public:

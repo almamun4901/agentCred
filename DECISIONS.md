@@ -244,3 +244,32 @@ instead of erasing the original context.
 - **Revisit if:** Load evidence justifies a bounded-stale policy cache, fairness needs a
   sliding window or token bucket, wildcard policy precedence is required, or Redis
   cluster deployment requires a different script/key strategy.
+
+## ADR-0014: Use immutable non-root images and volume-initialized local keys
+
+- **Date:** 2026-07-21
+- **Status:** Accepted for Phase 8
+- **Context:** The local demo must start from a clean clone without host-generated
+  keys, while the resulting application images should remain usable as the baseline
+  for ECS. Agent B needs the public key but must never receive the issuer's private
+  key.
+- **Options considered:** Host-generated bind-mounted keys; keys committed or baked
+  into an image; one shared key volume; or an initialization service with isolated
+  volumes. Development containers with source mounts were also considered instead of
+  immutable production-style images.
+- **Decision:** Build compiled, production-dependency-only images for issuer, Agent B,
+  and one-shot Agent A from a digest-pinned Node 22 Alpine base. Run applications as
+  UID 10001 with read-only root filesystems,
+  dropped capabilities, health checks, and graceful signal handling. A root-only local
+  initializer creates or validates an ES256 pair in two named volumes: issuer mounts
+  the private volume and Agent B mounts only the public volume. Compose runs Agent A
+  only through the `demo` profile and health-gates it on both application services.
+- **Tradeoffs:** Multi-stage workspace builds duplicate some build work across images,
+  and the key initializer adds lifecycle complexity. Named volumes give a true
+  one-command local startup and stable restarts, but they are local secret storage—not
+  a production secret-management design. Separate volumes prevent accidental private
+  key disclosure to Agent B at the cost of an extra volume and explicit initialization.
+- **Revisit if:** Phase 11 uses separate repositories or a shared build pipeline,
+  production signing moves to KMS, ECS injects keys from Secrets Manager, key rotation
+  requires overlapping verification keys/JWKS, or image-size evidence justifies a
+  different workspace packaging strategy.

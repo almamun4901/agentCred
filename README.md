@@ -315,3 +315,34 @@ With PostgreSQL and Redis healthy, reproduce the benchmark or run its complete g
 pnpm phase7:benchmark
 pnpm phase7:verify
 ```
+
+## Phase 8: containerized local stack
+
+Phase 8 packages the issuer, Agent B, and the one-shot Agent A demo as immutable
+multi-stage images. PostgreSQL and Redis remain the stateful backing services. Start
+the long-running stack, then run the deny-then-allow demo entirely on the private
+Compose network:
+
+```sh
+docker compose up --build --wait
+docker compose --profile demo run --rm agent-a
+```
+
+The first command initializes a local ES256 keypair in named volumes. The issuer
+mounts only the private-key volume and Agent B mounts only the public-key volume;
+neither key is copied into an image. Application containers run as UID 10001 with a
+read-only root filesystem, dropped capabilities, health checks, and graceful signal
+handling. Host-published ports remain bound to `127.0.0.1`.
+
+Normal restarts and `docker compose down` preserve PostgreSQL, Redis, and the signing
+identity. `docker compose down --volumes` intentionally deletes all four local data
+volumes, including the signing identity, so the next startup generates a new keypair.
+
+The full Phase 8 gate first runs every earlier regression gate, then creates an
+isolated clean-volume Compose project on alternate host ports. It verifies the
+containerized demo, audit evidence, non-root execution, private-key isolation, image
+contents, health, and key persistence before removing only its test-scoped volumes:
+
+```sh
+pnpm phase8:verify
+```

@@ -57,6 +57,13 @@ describe("issuer routes", () => {
     ttl: 300,
   };
 
+  it("reports process liveness without exposing dependency details", async () => {
+    const response = await app.inject({ method: "GET", url: "/healthz" });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ status: "ok" });
+  });
+
   it("issues a token and exposes its stored metadata", async () => {
     const issued = await app.inject({ method: "POST", url: "/issue", payload: validBody });
     expect(issued.statusCode).toBe(200);

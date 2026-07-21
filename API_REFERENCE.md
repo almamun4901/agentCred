@@ -9,10 +9,18 @@
 | `REVOCATION_SYNC_INTERVAL_SECONDS` | `5` | Positive-integer interval for PostgreSQL-to-Redis synchronization |
 | `SIGNING_PRIVATE_KEY_PATH` | `keys/private.pem` | ES256 PKCS#8 private-key path, resolved from the issuer process directory |
 | `ISSUER_ID` | `agentcred-issuer` | Value written to the JWT `iss` claim |
-| `PORT` | `3000` | Loopback-only HTTP port |
+| `HOST` | `127.0.0.1` | Listen address; Compose explicitly changes this to `0.0.0.0` inside its private network |
+| `PORT` | `3000` | HTTP port |
 
 The issuer is an unauthenticated local-development service. Do not expose it
 to an untrusted network.
+
+## GET /healthz
+
+Both the issuer and Agent B expose this unauthenticated process-liveness endpoint.
+It returns only `{ "status": "ok" }`; it does not disclose configuration or probe
+dependency state. Startup still fails closed until each service's required PostgreSQL,
+Redis, and key dependencies are available.
 
 ## POST /issue
 
@@ -262,7 +270,8 @@ trade response latency for tighter correlation with durable audit evidence.
 | `VERIFYING_PUBLIC_KEY_PATH` | `../../issuer/keys/public.pem` | Issuer ES256 public key |
 | `ISSUER_ID` | `agentcred-issuer` | Exact trusted JWT issuer |
 | `AGENT_B_AUDIENCE` | `agent-b` | Exact accepted JWT audience |
-| `PORT` | `3001` | Loopback-only HTTP port |
+| `HOST` | `127.0.0.1` | Listen address; Compose explicitly changes this to `0.0.0.0` inside its private network |
+| `PORT` | `3001` | HTTP port |
 
 Agent B refuses to listen if PostgreSQL is unavailable.
 

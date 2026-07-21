@@ -36,6 +36,8 @@ export function buildServer(
   const app = Fastify({ logger: options.logger ?? false });
   const audience = dependencies.audience ?? "agent-b";
 
+  app.get("/healthz", async () => ({ status: "ok" }));
+
   app.get(
     "/get-quote",
     {
@@ -75,6 +77,36 @@ function readPort(value: string | undefined): number {
     throw new Error("PORT must be an integer between 1 and 65535");
   }
   return port;
+}
+
+function readHost(value: string | undefined): string {
+  const host = value?.trim() || "127.0.0.1";
+  if (/\s/.test(host)) {
+    throw new Error("HOST must not contain whitespace");
+  }
+  return host;
+}
+
+function installGracefulShutdown(app: FastifyInstance): void {
+  let closing = false;
+  const shutdown = (signal: NodeJS.Signals) => {
+    if (closing) return;
+    closing = true;
+    app.log.info({ signal }, "Graceful shutdown started");
+    void app.close().catch((error: unknown) => {
+      app.log.error({ err: error }, "Graceful shutdown failed");
+      process.exitCode = 1;
+    });
+  };
+  const onSigterm = () => shutdown("SIGTERM");
+  const onSigint = () => shutdown("SIGINT");
+
+  process.once("SIGTERM", onSigterm);
+  process.once("SIGINT", onSigint);
+  app.addHook("onClose", async () => {
+    process.removeListener("SIGTERM", onSigterm);
+    process.removeListener("SIGINT", onSigint);
+  });
 }
 
 async function start(): Promise<void> {
@@ -130,7 +162,11 @@ async function start(): Promise<void> {
       }
       await pool.end();
     });
-    await app.listen({ host: "127.0.0.1", port: readPort(process.env.PORT) });
+    installGracefulShutdown(app);
+    await app.listen({
+      host: readHost(process.env.HOST),
+      port: readPort(process.env.PORT),
+    });
   } catch (error: unknown) {
     if (app !== undefined) {
       await app.close();

@@ -13,26 +13,19 @@ COPY demo-agents/agent-a/package.json demo-agents/agent-a/package.json
 COPY demo-agents/agent-b/package.json demo-agents/agent-b/package.json
 RUN pnpm install --frozen-lockfile
 
-COPY verifier-sdk verifier-sdk
-COPY demo-agents/agent-b demo-agents/agent-b
-RUN pnpm --filter @agent-cred/verifier-sdk build \
-    && pnpm --filter @agent-cred/agent-b build \
-    && pnpm --filter @agent-cred/agent-b deploy --prod --legacy /opt/agent-b
+COPY demo-agents/agent-a demo-agents/agent-a
+RUN pnpm --filter @agent-cred/agent-a build \
+    && pnpm --filter @agent-cred/agent-a deploy --prod --legacy /opt/agent-a
 
 FROM node:22-alpine@sha256:16e22a550f3863206a3f701448c45f7912c6896a62de43add43bb9c86130c3e2 AS runtime
 
 ENV NODE_ENV=production
-ENV HOST=0.0.0.0
-ENV PORT=3001
 WORKDIR /app
 
 RUN addgroup -S -g 10001 agentcred \
     && adduser -S -D -H -u 10001 -G agentcred agentcred
 
-COPY --from=build --chown=10001:10001 /opt/agent-b ./
+COPY --from=build --chown=10001:10001 /opt/agent-a ./
 
 USER 10001:10001
-EXPOSE 3001
-HEALTHCHECK --interval=10s --timeout=3s --start-period=10s --retries=5 \
-  CMD ["node", "-e", "fetch('http://127.0.0.1:3001/healthz').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
-CMD ["node", "dist/server.js"]
+CMD ["node", "dist/index.js"]

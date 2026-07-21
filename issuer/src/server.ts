@@ -38,6 +38,8 @@ export function buildServer(
     ajv: { customOptions: { removeAdditional: false } },
   });
 
+  app.get("/healthz", async () => ({ status: "ok" }));
+
   app.setErrorHandler((error, request, reply) => {
     const isValidationError =
       typeof error === "object" && error !== null && "validation" in error;
@@ -61,6 +63,36 @@ export function buildServer(
 const DEFAULT_DATABASE_URL =
   "postgresql://agentcred:agentcred-local-only@localhost:5432/agentcred";
 const DEFAULT_REDIS_URL = "redis://127.0.0.1:6379";
+
+function readHost(value: string | undefined): string {
+  const host = value?.trim() || "127.0.0.1";
+  if (/\s/.test(host)) {
+    throw new Error("HOST must not contain whitespace");
+  }
+  return host;
+}
+
+function installGracefulShutdown(app: FastifyInstance): void {
+  let closing = false;
+  const shutdown = (signal: NodeJS.Signals) => {
+    if (closing) return;
+    closing = true;
+    app.log.info({ signal }, "Graceful shutdown started");
+    void app.close().catch((error: unknown) => {
+      app.log.error({ err: error }, "Graceful shutdown failed");
+      process.exitCode = 1;
+    });
+  };
+  const onSigterm = () => shutdown("SIGTERM");
+  const onSigint = () => shutdown("SIGINT");
+
+  process.once("SIGTERM", onSigterm);
+  process.once("SIGINT", onSigint);
+  app.addHook("onClose", async () => {
+    process.removeListener("SIGTERM", onSigterm);
+    process.removeListener("SIGINT", onSigint);
+  });
+}
 
 async function start(): Promise<void> {
   const privateKeyPath = resolve(
@@ -117,6 +149,7 @@ async function start(): Promise<void> {
       }
       await pool.end();
     });
+    installGracefulShutdown(app);
 
     await synchronizer.syncOnce();
     synchronizer.start();
@@ -126,7 +159,7 @@ async function start(): Promise<void> {
       throw new Error("PORT must be an integer between 1 and 65535");
     }
 
-    await app.listen({ host: "127.0.0.1", port });
+    await app.listen({ host: readHost(process.env.HOST), port });
   } catch (error: unknown) {
     synchronizer?.stop();
     if (app !== undefined) {

@@ -36,6 +36,7 @@
     "phase6:demo": "pnpm phase6:demo:setup && pnpm --filter @agent-cred/agent-a demo:rate-limit",
     "phase7:benchmark": "pnpm --filter @agent-cred/verifier-sdk build && node verifier-sdk/scripts/phase7-benchmark.mjs",
     "phase7:benchmark:smoke": "pnpm phase7:benchmark --duration 0.05 --warmup 0.05 --concurrency 2 --sweep 1,2 --trials 1",
+    "phase8:verify:containers": "sh scripts/phase8-verify.sh",
     "phase3:test:unit": "pnpm issuer:test && pnpm verifier:test && pnpm --filter @agent-cred/verifier-sdk build && pnpm --filter @agent-cred/agent-b test && pnpm --filter @agent-cred/agent-a test",
     "phase3:test:integration": "pnpm issuer:test:integration && pnpm verifier:test:integration && pnpm --filter @agent-cred/agent-b test:integration",
     "phase3:typecheck": "pnpm --filter @agent-cred/verifier-sdk typecheck && pnpm --filter @agent-cred/issuer typecheck && pnpm --filter @agent-cred/agent-b typecheck && pnpm --filter @agent-cred/agent-a typecheck",
@@ -44,6 +45,7 @@
     "phase4:verify": "pnpm phase3:verify && pnpm report:denials",
     "phase5:verify": "pnpm phase4:verify && pnpm redis:verify && docker compose config -q",
     "phase6:verify": "pnpm db:migrate && pnpm phase5:verify && pnpm --filter @agent-cred/verifier-sdk test:rate-limit:integration",
-    "phase7:verify": "pnpm phase6:verify && pnpm phase7:benchmark:smoke"
+    "phase7:verify": "pnpm phase6:verify && pnpm phase7:benchmark:smoke",
+    "phase8:verify": "pnpm phase7:verify && pnpm phase8:verify:containers"
   }
 }

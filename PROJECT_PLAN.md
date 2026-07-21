@@ -18,7 +18,7 @@ alternatives, and consequences are recorded in [DECISIONS.md](./DECISIONS.md).
 | Phase 5 — Revocation Cache | Complete | Redis fast path, safe fallback, and measured 5.029s out-of-band propagation verified |
 | Phase 6 — Rate Limiting | Complete | Atomic Redis enforcement, rotation-resistant demo, and audit evidence passed |
 | Phase 7 — Load Test | Complete | Three-path middleware benchmark captured latency and throughput evidence |
-| Phase 8 — Dockerization | Not started | Containerize application services |
+| Phase 8 — Dockerization | Complete | Clean-volume Compose demo, hardened images, key isolation, and full regression gate passed |
 | Phase 9 — CI | Not started | Add automated lint, test, and build gates |
 | Phase 10 — Terraform | Not started | Provision the documented AWS architecture |
 | Phase 11 — CD | Not started | Connect verified images to AWS deployment |
@@ -518,12 +518,51 @@ not as a standalone feature.
 
 ---
 
-### Phase 8 — Dockerization (1-2h)
-- Multi-stage Dockerfiles for `issuer` and `demo-agents/agent-b`.
-- `docker-compose.yml` updated to run issuer + agent-b + Postgres together for a one-command local demo.
+### Phase 8 — Dockerization (1-2h) — Complete 2026-07-21
+
+- [x] Digest-pinned multi-stage images for issuer, Agent B, and one-shot Agent A.
+- [x] Compiled production deployments run as UID 10001 with read-only root filesystems,
+  dropped capabilities, health checks, and graceful signal handling.
+- [x] Idempotent key initializer creates or validates the local ES256 pair without
+  copying key material into an image.
+- [x] Private and public key volumes are separated so Agent B cannot mount the private
+  key.
+- [x] Compose health-gates PostgreSQL, Redis, key initialization, issuer, and Agent B;
+  Agent A remains an explicit `demo` profile.
+- [x] Container-specific verification uses its own Compose project, alternate host
+  ports, and disposable test-only volumes.
 
 **Testing after this task:**
-- `docker compose up --build` from a clean clone brings up the full stack and the Phase 3 demo script still passes end-to-end inside containers.
+- [x] `docker compose up --build --wait` from clean volumes brings up the full stack.
+- [x] The Phase 3 deny-then-allow demo passes entirely inside containers and leaves
+  matching PostgreSQL audit evidence.
+
+**Verification recorded 2026-07-21:**
+
+- `pnpm phase8:verify` passed the complete Phase 7 regression chain: 109 unit tests,
+  14 real-backend integration cases, every workspace typecheck and build, the denial
+  report, Redis readiness, the rate-limit concurrency test, and the Phase 7 smoke
+  benchmark.
+- The isolated clean-volume Compose gate built all application and initializer images,
+  waited for healthy PostgreSQL, Redis, issuer, and Agent B, then ran Agent A as a
+  one-shot profile. It observed `403 scope_exceeded` followed by `200` and queried the
+  corresponding `deny` then `allow` audit rows from PostgreSQL.
+- Runtime inspection confirmed issuer and Agent B use UID 10001, their images contain
+  no PEM/key files, and Agent B has no private-key path. Restarting both applications
+  preserved the public-key SHA-256 hash and both health probes recovered.
+- The verification harness removed only its `agentcred-phase8-verify` containers,
+  network, and volumes after the gate; normal project data was not reset.
+
+**Known limitations accepted for Phase 8:**
+
+- Named volumes are appropriate local secret storage, not the production key design.
+  Phase 10/11 must inject secrets from AWS Secrets Manager or move signing to KMS.
+- The local initializer runs as root solely to assign the private key to the fixed
+  application UID. Long-running application containers remain non-root.
+- The monorepo Dockerfiles duplicate dependency/build stages. Shared build caching
+  limits the local cost; optimize only if CI evidence shows it is material.
+- Key rotation, overlapping verification keys, and JWKS distribution remain out of
+  scope; deleting the signing volumes intentionally creates a new local identity.
 
 ---
 

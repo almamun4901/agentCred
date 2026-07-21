@@ -1,5 +1,36 @@
 # Runbook
 
+## Containerized local stack
+
+Start the full long-running stack and wait for health gates:
+
+```sh
+docker compose up --build --wait
+```
+
+Run the one-shot demo without turning Agent A into a long-running service:
+
+```sh
+docker compose --profile demo run --rm agent-a
+```
+
+- **`key-init` fails:** inspect `docker compose logs key-init`. A partial or mismatched
+  pair is rejected rather than silently rotated. For disposable local data only,
+  `docker compose down --volumes` removes the database, cache, and key volumes so the
+  next startup can generate a clean identity.
+- **Issuer or Agent B remains unhealthy:** inspect its logs and the PostgreSQL/Redis
+  health state with `docker compose ps`. Both applications fail startup when their
+  required dependencies or mounted key are unavailable.
+- **Host port already in use:** override `POSTGRES_PORT`, `REDIS_PORT`, `ISSUER_PORT`,
+  or `AGENT_B_PORT` for that invocation. Container-to-container ports do not change.
+- **Application restart:** `docker compose restart issuer agent-b` preserves the
+  signing volumes. A changed signing identity indicates the volumes were explicitly
+  removed or a different Compose project name was used.
+
+Issuer and Agent B run with read-only root filesystems as UID 10001. Agent B has no
+private-key mount. Do not weaken those controls to troubleshoot a local permission
+problem; inspect the key initializer and volume lifecycle instead.
+
 ## Local service checks
 
 Start both stateful services and verify Redis:

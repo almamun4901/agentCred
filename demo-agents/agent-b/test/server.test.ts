@@ -56,6 +56,18 @@ describe("Agent B", () => {
     return app;
   }
 
+  it("reports process liveness without exposing dependency details", async () => {
+    const verifyCredential = vi.fn();
+    const app = buildServer({ verifyCredential });
+    apps.push(app);
+
+    const response = await app.inject({ method: "GET", url: "/healthz" });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ status: "ok" });
+    expect(verifyCredential).not.toHaveBeenCalled();
+  });
+
   it("returns the quote to a credential with the exact required scope", async () => {
     const query = vi.fn().mockResolvedValue({ rowCount: 1 });
     const app = createApp(createPostgresAuditObserver({ query } as never));
